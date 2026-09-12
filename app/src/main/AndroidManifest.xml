@@ -88,6 +88,19 @@
                 android:value="Displays live workout statistics overlay" />
         </service>
 
+        <!-- Not used to read notifications. This grant is the only non-signature route to
+             MediaSessionManager.getActiveSessions, which is how zone enforcement pauses the
+             video playing underneath. Optional: without it the media-key fallback is used. -->
+        <service
+            android:name=".media.GrupettoNotificationListenerService"
+            android:exported="false"
+            android:label="@string/media_control_service_label"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
     </application>
 
 </manifest>
