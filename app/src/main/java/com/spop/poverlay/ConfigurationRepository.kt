@@ -6,7 +6,10 @@ import androidx.core.content.edit
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.LifecycleOwner
+import com.spop.poverlay.zone.EnforcementConfig
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.combine
 
 class ConfigurationRepository(context: Context, lifecycleOwner: LifecycleOwner) : AutoCloseable {
 
@@ -15,11 +18,26 @@ class ConfigurationRepository(context: Context, lifecycleOwner: LifecycleOwner) 
         BleTxEnabled("bleTxEnabled"),
         DirConEnabled("dirConEnabled"),
         BleFtmsDeviceName("bleFtmsDeviceName"),
-        SerialNumber("serialNumber")
+        SerialNumber("serialNumber"),
+        ZoneEnforcementEnabled("zoneEnforcementEnabled"),
+        ZonePenaltyEnabled("zonePenaltyEnabled"),
+        ZoneTargetZone("zoneTargetZone"),
+        ZoneGoalMinutes("zoneGoalMinutes"),
+        ZoneGraceSeconds("zoneGraceSeconds")
     }
 
     companion object {
         const val SharedPrefsName = "configuration"
+
+        const val DefaultTargetZone = 2
+        const val MinTargetZone = 1
+        const val MaxTargetZone = 5
+        const val DefaultGoalMinutes = 45
+        const val MinGoalMinutes = 1
+        const val MaxGoalMinutes = 600
+        const val DefaultGraceSeconds = 30
+        const val MinGraceSeconds = 5
+        const val MaxGraceSeconds = 120
         // This workaround is required since SharedPreferences
         // only stores weak references to objects
         val SharedPreferenceListeners =
@@ -31,12 +49,43 @@ class ConfigurationRepository(context: Context, lifecycleOwner: LifecycleOwner) 
     private val mutableDirConEnabled = MutableStateFlow(true)
     private val mutableBleFtmsDeviceName = MutableStateFlow("Grupetto FTMS")
     private val mutableSerialNumber = MutableStateFlow("")
+    private val mutableZoneEnforcementEnabled = MutableStateFlow(false)
+    private val mutableZonePenaltyEnabled = MutableStateFlow(false)
+    private val mutableZoneTargetZone = MutableStateFlow(DefaultTargetZone)
+    private val mutableZoneGoalMinutes = MutableStateFlow(DefaultGoalMinutes)
+    private val mutableZoneGraceSeconds = MutableStateFlow(DefaultGraceSeconds)
 
     val showTimerWhenMinimized = mutableShowTimerWhenMinimized
     val bleTxEnabled = mutableBleTxEnabled
     val dirConEnabled = mutableDirConEnabled
     val bleFtmsDeviceName = mutableBleFtmsDeviceName
     val serialNumber = mutableSerialNumber
+    val zoneEnforcementEnabled = mutableZoneEnforcementEnabled
+    val zonePenaltyEnabled = mutableZonePenaltyEnabled
+    val zoneTargetZone = mutableZoneTargetZone
+    val zoneGoalMinutes = mutableZoneGoalMinutes
+    val zoneGraceSeconds = mutableZoneGraceSeconds
+
+    /**
+     * The shape zone enforcement actually consumes. Because the repository re-reads on every
+     * SharedPreferences change, a settings edit reaches the running overlay service without a
+     * restart.
+     */
+    val zoneEnforcementConfig: Flow<EnforcementConfig> = combine(
+        mutableZoneEnforcementEnabled,
+        mutableZonePenaltyEnabled,
+        mutableZoneTargetZone,
+        mutableZoneGoalMinutes,
+        mutableZoneGraceSeconds,
+    ) { enabled, penaltyEnabled, targetZone, goalMinutes, graceSeconds ->
+        EnforcementConfig(
+            enabled = enabled,
+            penaltyEnabled = penaltyEnabled,
+            targetZone = targetZone,
+            goalSeconds = goalMinutes * 60L,
+            graceSeconds = graceSeconds.toLong(),
+        )
+    }
 
     private val sharedPreferences: SharedPreferences
 
@@ -90,6 +139,35 @@ class ConfigurationRepository(context: Context, lifecycleOwner: LifecycleOwner) 
         }
     }
 
+    fun setZoneEnforcementEnabled(enabled: Boolean) {
+        mutableZoneEnforcementEnabled.value = enabled
+        sharedPreferences.edit { putBoolean(Preferences.ZoneEnforcementEnabled.key, enabled) }
+    }
+
+    fun setZonePenaltyEnabled(enabled: Boolean) {
+        mutableZonePenaltyEnabled.value = enabled
+        sharedPreferences.edit { putBoolean(Preferences.ZonePenaltyEnabled.key, enabled) }
+    }
+
+    fun setZoneTargetZone(zone: Int) {
+        val clamped = zone.coerceIn(MinTargetZone, MaxTargetZone)
+        mutableZoneTargetZone.value = clamped
+        sharedPreferences.edit { putInt(Preferences.ZoneTargetZone.key, clamped) }
+    }
+
+    fun setZoneGoalMinutes(minutes: Int) {
+        val clamped = minutes.coerceIn(MinGoalMinutes, MaxGoalMinutes)
+        mutableZoneGoalMinutes.value = clamped
+        sharedPreferences.edit { putInt(Preferences.ZoneGoalMinutes.key, clamped) }
+    }
+
+    fun setZoneGraceSeconds(seconds: Int) {
+        // Heart rate lags effort by 20-30s; a shorter grace punishes physiology, not slacking.
+        val clamped = seconds.coerceIn(MinGraceSeconds, MaxGraceSeconds)
+        mutableZoneGraceSeconds.value = clamped
+        sharedPreferences.edit { putInt(Preferences.ZoneGraceSeconds.key, clamped) }
+    }
+
     fun setSerialNumber(serial: String) {
         val normalized = serial.trim().uppercase()
         mutableSerialNumber.value = normalized
@@ -119,6 +197,24 @@ class ConfigurationRepository(context: Context, lifecycleOwner: LifecycleOwner) 
         mutableBleFtmsDeviceName.value =
             sharedPreferences
                 .getString(Preferences.BleFtmsDeviceName.key, "Grupetto FTMS") ?: "Grupetto FTMS"
+
+        mutableZoneEnforcementEnabled.value =
+            sharedPreferences.getBoolean(Preferences.ZoneEnforcementEnabled.key, false)
+
+        mutableZonePenaltyEnabled.value =
+            sharedPreferences.getBoolean(Preferences.ZonePenaltyEnabled.key, false)
+
+        mutableZoneTargetZone.value =
+            sharedPreferences.getInt(Preferences.ZoneTargetZone.key, DefaultTargetZone)
+                .coerceIn(MinTargetZone, MaxTargetZone)
+
+        mutableZoneGoalMinutes.value =
+            sharedPreferences.getInt(Preferences.ZoneGoalMinutes.key, DefaultGoalMinutes)
+                .coerceIn(MinGoalMinutes, MaxGoalMinutes)
+
+        mutableZoneGraceSeconds.value =
+            sharedPreferences.getInt(Preferences.ZoneGraceSeconds.key, DefaultGraceSeconds)
+                .coerceIn(MinGraceSeconds, MaxGraceSeconds)
 
         // Ensure a serial number exists and keep it in memory
         val existingSerial = sharedPreferences.getString(Preferences.SerialNumber.key, null)

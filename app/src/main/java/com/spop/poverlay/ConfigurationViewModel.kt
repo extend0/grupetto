@@ -17,8 +17,11 @@ import com.spop.poverlay.overlay.OverlayService
 import com.spop.poverlay.releases.Release
 import com.spop.poverlay.releases.ReleaseChecker
 import com.spop.poverlay.sensor.heartrate.HeartRateDevice
+import com.spop.poverlay.media.MediaPenaltyController
 import com.spop.poverlay.sensor.heartrate.HeartRateManager
+import com.spop.poverlay.zone.ZoneRuntime
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import timber.log.Timber
@@ -28,12 +31,17 @@ class ConfigurationViewModel(
     private val configurationRepository: ConfigurationRepository,
     private val releaseChecker: ReleaseChecker,
 ) : AndroidViewModel(application) {
+    companion object {
+        private const val TestPauseHoldMs = 1_500L
+    }
+
     val finishActivity = MutableLiveData<Unit>()
     val requestOverlayPermission = MutableLiveData<Unit>()
     val requestRestart = MutableLiveData<Unit>()
     val requestQuit = MutableLiveData<Unit>()
     val requestBluetoothPermissions = MutableLiveData<Array<String>>()
     val requestIgnoreBatteryOptimizations = MutableLiveData<Unit>()
+    val requestNotificationListenerAccess = MutableLiveData<Unit>()
     val showPermissionInfo = mutableStateOf(false)
     val infoPopup = MutableLiveData<String>()
 
@@ -42,6 +50,8 @@ class ConfigurationViewModel(
     val hrSavedDevices = HeartRateManager.savedDevices
     val hrIsScanning = HeartRateManager.isScanning
     val hrMatchByName = HeartRateManager.matchByName
+    val hrZones = HeartRateManager.heartRateZones
+    val zoneGoalSnapshot = ZoneRuntime.snapshot
     val isOverlayRunning: StateFlow<Boolean> = OverlayService.isRunning
 
     var latestRelease = mutableStateOf<Release?>(null)
@@ -58,7 +68,23 @@ class ConfigurationViewModel(
     val bleFtmsDeviceName
         get() = configurationRepository.bleFtmsDeviceName
 
+    val zoneEnforcementEnabled
+        get() = configurationRepository.zoneEnforcementEnabled
+
+    val zonePenaltyEnabled
+        get() = configurationRepository.zonePenaltyEnabled
+
+    val zoneTargetZone
+        get() = configurationRepository.zoneTargetZone
+
+    val zoneGoalMinutes
+        get() = configurationRepository.zoneGoalMinutes
+
+    val zoneGraceSeconds
+        get() = configurationRepository.zoneGraceSeconds
+
     private val bleServer = (application as GrupettoApplication).bleServer
+    private val mediaPenaltyController by lazy { MediaPenaltyController(application) }
     private var batteryOptimizationPromptShownThisSession = false
 
     init {
@@ -100,6 +126,56 @@ class ConfigurationViewModel(
         syncOutboundTransports()
         requestBatteryOptimizationExemptionIfNeeded()
     }
+
+    fun onZoneEnforcementEnabledClicked(isChecked: Boolean) {
+        configurationRepository.setZoneEnforcementEnabled(isChecked)
+    }
+
+    fun onZonePenaltyEnabledClicked(isChecked: Boolean) {
+        configurationRepository.setZonePenaltyEnabled(isChecked)
+    }
+
+    fun onZoneTargetZoneSelected(zone: Int) {
+        configurationRepository.setZoneTargetZone(zone)
+    }
+
+    fun onZoneGoalMinutesChanged(minutes: Int) {
+        configurationRepository.setZoneGoalMinutes(minutes)
+    }
+
+    fun onZoneGraceSecondsChanged(seconds: Int) {
+        configurationRepository.setZoneGraceSeconds(seconds)
+    }
+
+    fun onGrantNotificationAccessClicked() {
+        requestNotificationListenerAccess.value = Unit
+    }
+
+    /**
+     * Pauses whatever is playing, holds it briefly, then hands it back.
+     *
+     * The point is to let the rider find out which mechanism works on their tablet *before*
+     * trusting it mid-ride, rather than discovering the penalty does nothing at minute 30.
+     */
+    fun onTestMediaPauseClicked() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val via = mediaPenaltyController.pause()
+            if (via == null) {
+                infoPopup.postValue(
+                    "Nothing is playing, or no media control is available. " +
+                        "Start a video first, then try again."
+                )
+                return@launch
+            }
+            delay(TestPauseHoldMs)
+            val resumed = mediaPenaltyController.resume()
+            infoPopup.postValue(
+                if (resumed) "Paused and resumed using $via." else "Paused using $via, but resuming failed."
+            )
+        }
+    }
+
+    fun mediaCapabilities() = mediaPenaltyController.capabilities()
 
     fun onBluetoothPermissionsResult(granted: Boolean) {
         if (granted) {

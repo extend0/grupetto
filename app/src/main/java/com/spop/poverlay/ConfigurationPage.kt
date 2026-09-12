@@ -30,7 +30,7 @@ import com.spop.poverlay.ui.theme.ErrorColor
 import kotlin.math.max
 import kotlin.math.min
 
-private data class UiScale(
+internal data class UiScale(
                 val value: Float
 ) {
         fun sp(base: Float) = max(base * value, 16f).sp
@@ -107,7 +107,10 @@ fun ConfigurationPage(viewModel: ConfigurationViewModel) {
                         viewModel::onStartServiceClicked,
                         viewModel::onQuitClicked,
                         viewModel::onClickedRelease,
-                        latestRelease
+                        latestRelease,
+                        zoneGoalCard = { onOpenHeartRateSettings ->
+                            ZoneGoalCard(viewModel, uiScale, onOpenHeartRateSettings)
+                        }
                 )
             }
         }
@@ -139,7 +142,8 @@ private fun StartServicePage(
         onClickedStartOverlay: () -> Unit,
         onClickedQuitApp: () -> Unit,
         onClickedRelease: (Release) -> Unit,
-        latestRelease: Release?
+        latestRelease: Release?,
+        zoneGoalCard: @Composable (onOpenHeartRateSettings: () -> Unit) -> Unit
 ) {
     var showHeartRateDialog by remember { mutableStateOf(false) }
 
@@ -339,6 +343,10 @@ private fun StartServicePage(
                 }
             }
         }
+
+        Spacer(modifier = Modifier.height(uiScale.dp(12f)))
+
+        zoneGoalCard { showHeartRateDialog = true }
 
         Spacer(modifier = Modifier.height(uiScale.dp(12f)))
 

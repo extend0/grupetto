@@ -4,7 +4,10 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.graphics.PixelFormat
@@ -17,6 +20,7 @@ import android.view.WindowManager
 import android.view.WindowManager.LayoutParams
 import android.widget.FrameLayout
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.platform.ComposeView
@@ -34,7 +38,14 @@ import androidx.lifecycle.repeatOnLifecycle
 import com.spop.poverlay.ConfigurationRepository
 import com.spop.poverlay.GrupettoApplication
 import com.spop.poverlay.MainActivity
+import com.spop.poverlay.BuildConfig
 import com.spop.poverlay.R
+import com.spop.poverlay.media.MediaPenaltyController
+import com.spop.poverlay.overlay.penalty.PenaltyCurtain
+import com.spop.poverlay.sensor.heartrate.HeartRateManager
+import com.spop.poverlay.zone.ZoneEnforcementCoordinator
+import com.spop.poverlay.zone.ZonePersistence
+import com.spop.poverlay.zone.ZoneRuntime
 
 import com.spop.poverlay.sensor.CadenceWatchdog
 import com.spop.poverlay.sensor.DeadSensorDetector
@@ -49,6 +60,7 @@ import com.spop.poverlay.util.disableAnimations
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -62,9 +74,22 @@ class OverlayService : LifecycleEnabledService() {
     companion object {
         const val ActionMinimizeOverlay = "com.spop.poverlay.action.MINIMIZE_OVERLAY"
         const val ActionRestoreOverlay = "com.spop.poverlay.action.RESTORE_OVERLAY"
+        const val ActionReleasePenalty = "com.spop.poverlay.action.RELEASE_PENALTY"
+        private const val ActionDebugSetHeartRate = "com.spop.poverlay.debug.SET_HR"
+        private const val DebugHeartRateExtra = "bpm"
         private const val DefaultOverlayFlags = (LayoutParams.FLAG_NOT_TOUCH_MODAL
                 or LayoutParams.FLAG_NOT_FOCUSABLE
                 or LayoutParams.FLAG_LAYOUT_NO_LIMITS)
+
+        /**
+         * The penalty curtain covers the whole screen and must swallow taps aimed at the video
+         * underneath, so FLAG_NOT_TOUCHABLE is deliberately absent. It stays NOT_FOCUSABLE so it
+         * never steals key events or breaks the host app's back button.
+         */
+        private const val CurtainFlags = (LayoutParams.FLAG_NOT_FOCUSABLE
+                or LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                or LayoutParams.FLAG_LAYOUT_NO_LIMITS
+                or LayoutParams.FLAG_KEEP_SCREEN_ON)
 
 
         private const val OverlayServiceId = 2032
@@ -92,6 +117,9 @@ class OverlayService : LifecycleEnabledService() {
     private var wakeLockRefreshJob: Job? = null
     private var overlayView: View? = null
     private var touchTargetView: View? = null
+    private var curtainView: View? = null
+    private var debugHeartRateReceiver: BroadcastReceiver? = null
+    private var zoneCoordinator: ZoneEnforcementCoordinator? = null
     private var windowManager: WindowManager? = null
     private var sensorViewModel: OverlaySensorViewModel? = null
     private var minimizedStateBeforeConfiguration: Boolean? = null
@@ -101,6 +129,12 @@ class OverlayService : LifecycleEnabledService() {
         super.onCreate()
         mutableIsRunning.value = true
         syncBackgroundExecutionGuards()
+        // The config screen normally starts this, but the overlay can be launched without it
+        // ever opening (boot, or the cadence watchdog restart). start() is idempotent.
+        HeartRateManager.start(applicationContext)
+        // Keeps the staleness watchdog running for as long as the overlay lives, so a silently
+        // dead strap blanks the heart rate instead of freezing it at its last value.
+        HeartRateManager.setManaging(true, HeartRateManager.OwnerOverlay)
         val notification = prepareNotification(NotificationManagerCompat.from(this))
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             startForeground(
@@ -118,6 +152,7 @@ class OverlayService : LifecycleEnabledService() {
         } else {
             startForeground(OverlayServiceId, notification)
         }
+        registerDebugHeartRateReceiver()
         buildDialog()
     }
 
@@ -137,6 +172,9 @@ class OverlayService : LifecycleEnabledService() {
                     viewModel.minimizeOverlay()
                 }
             }
+            ActionReleasePenalty -> {
+                zoneCoordinator?.releaseByUser()
+            }
             ActionRestoreOverlay -> {
                 minimizedStateBeforeConfiguration?.let { previousState ->
                     sensorViewModel?.setMinimized(previousState)
@@ -150,6 +188,12 @@ class OverlayService : LifecycleEnabledService() {
 
     override fun onDestroy() {
         mutableIsRunning.value = false
+        // Stop before tearing down the views: this hands back any media we paused.
+        zoneCoordinator?.stop()
+        zoneCoordinator = null
+        HeartRateManager.setManaging(false, HeartRateManager.OwnerOverlay)
+        debugHeartRateReceiver?.let { runCatching { unregisterReceiver(it) } }
+        debugHeartRateReceiver = null
         removeOverlayViews()
         releaseWakeLock()
         sensorViewModel = null
@@ -187,9 +231,11 @@ class OverlayService : LifecycleEnabledService() {
             EmulatorSensorInterface
         }
 
+        val configurationRepository = ConfigurationRepository(applicationContext, this)
+
         val timerViewModel = OverlayTimerViewModel(
             application,
-            ConfigurationRepository(applicationContext, this),
+            configurationRepository,
             sensorInterface.power
         )
 
@@ -204,6 +250,22 @@ class OverlayService : LifecycleEnabledService() {
         timerViewModel.observeMovement(sensorViewModel.isMoving, sensorViewModel.sessionReset)
 
         val dialogViewModel = OverlayDialogViewModel(screenSize, sensorViewModel.isMinimized)
+
+        val coordinator = ZoneEnforcementCoordinator(
+            scope = lifecycleScope,
+            configFlow = configurationRepository.zoneEnforcementConfig,
+            isMovingFlow = sensorViewModel.isMoving,
+            media = MediaPenaltyController(applicationContext),
+            persistence = ZonePersistence(applicationContext),
+            onShowCurtain = ::showPenaltyCurtain,
+            onHideCurtain = ::hidePenaltyCurtain,
+        )
+        zoneCoordinator = coordinator
+        coordinator.start()
+        lifecycleScope.launch {
+            // A new ride is a new goal.
+            sensorViewModel.sessionReset.drop(1).collect { coordinator.resetSession() }
+        }
 
         // Initialize and start watchdog (always enabled)
         val watchdogThreshold = 30.minutes
@@ -228,12 +290,7 @@ class OverlayService : LifecycleEnabledService() {
             }
         }
 
-        val layoutFlag = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            LayoutParams.TYPE_APPLICATION_OVERLAY
-        } else {
-            @Suppress("DEPRECATION")
-            LayoutParams.TYPE_SYSTEM_ALERT
-        }
+        val layoutFlag = overlayWindowType()
 
 
         val overlayParams = LayoutParams(
@@ -511,9 +568,90 @@ class OverlayService : LifecycleEnabledService() {
         return hasBaseBluetooth && hasBluetoothAdmin && hasFineLocation
     }
 
+    /**
+     * Debug builds only: lets zone enforcement be driven from the command line.
+     *
+     *   adb shell am broadcast -a com.spop.poverlay.debug.SET_HR --ei bpm 130
+     *   adb shell am broadcast -a com.spop.poverlay.debug.SET_HR --ei bpm -1   (strap dropout)
+     *
+     * Without this, every change to the state machine costs a real 45 minute ride to verify.
+     */
+    private fun registerDebugHeartRateReceiver() {
+        if (!BuildConfig.DEBUG) return
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                val bpm = intent?.getIntExtra(DebugHeartRateExtra, -1) ?: -1
+                HeartRateManager.injectDebugHeartRate(bpm.takeIf { it > 0 })
+            }
+        }
+        ContextCompat.registerReceiver(
+            this,
+            receiver,
+            IntentFilter(ActionDebugSetHeartRate),
+            ContextCompat.RECEIVER_EXPORTED,
+        )
+        debugHeartRateReceiver = receiver
+        Timber.i("Debug heart rate injection enabled")
+    }
+
+    private fun overlayWindowType() = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        LayoutParams.TYPE_APPLICATION_OVERLAY
+    } else {
+        @Suppress("DEPRECATION")
+        LayoutParams.TYPE_SYSTEM_ALERT
+    }
+
+    /**
+     * Adds the full-screen penalty curtain as a third window, independent of the stat overlay
+     * and its layout pipeline. Failing to add it is logged but never propagated: the media
+     * resume path must not be blocked by a missing curtain.
+     */
+    private fun showPenaltyCurtain() {
+        if (curtainView != null) return
+        val wm = windowManager ?: return
+        val params = LayoutParams(
+            LayoutParams.MATCH_PARENT,
+            LayoutParams.MATCH_PARENT,
+            overlayWindowType(),
+            CurtainFlags,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            disableAnimations()
+        }
+        val view = ComposeView(this).apply {
+            lifecycleViaService()
+            // Not DisposeOnLifecycleDestroyed: the curtain is added and removed many times per
+            // ride, and that strategy would leak a composition on every penalty.
+            setViewCompositionStrategy(
+                ViewCompositionStrategy.DisposeOnDetachedFromWindowOrReleasedFromPool
+            )
+            setContent {
+                val snapshot by ZoneRuntime.snapshot.collectAsState()
+                snapshot?.let {
+                    PenaltyCurtain(
+                        snapshot = it,
+                        onRelease = { zoneCoordinator?.releaseByUser() },
+                    )
+                }
+            }
+        }
+        runCatching { wm.addView(view, params) }
+            .onSuccess { curtainView = view }
+            .onFailure { Timber.e(it, "Failed to show penalty curtain") }
+    }
+
+    private fun hidePenaltyCurtain() {
+        val view = curtainView ?: return
+        curtainView = null
+        windowManager?.let { wm ->
+            runCatching { wm.removeViewImmediate(view) }
+                .onFailure { Timber.w(it, "Failed to remove penalty curtain") }
+        }
+    }
+
     private fun removeOverlayViews() {
         val wm = windowManager
-        val hasViews = overlayView != null || touchTargetView != null
+        val hasViews = overlayView != null || touchTargetView != null || curtainView != null
         if (wm != null && hasViews) {
             overlayView?.let {
                 runCatching { wm.removeViewImmediate(it) }
@@ -523,11 +661,16 @@ class OverlayService : LifecycleEnabledService() {
                 runCatching { wm.removeViewImmediate(it) }
                     .onFailure { ex -> Timber.w(ex, "Failed to remove touch target view") }
             }
+            curtainView?.let {
+                runCatching { wm.removeViewImmediate(it) }
+                    .onFailure { ex -> Timber.w(ex, "Failed to remove penalty curtain") }
+            }
         } else if (wm == null && hasViews) {
             Timber.e("WindowManager unavailable during cleanup; overlay views may remain attached and leak")
         }
         overlayView = null
         touchTargetView = null
+        curtainView = null
         windowManager = null
     }
 }

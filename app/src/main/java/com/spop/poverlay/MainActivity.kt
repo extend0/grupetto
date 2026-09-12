@@ -1,5 +1,6 @@
 package com.spop.poverlay
 
+import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.Configuration
@@ -27,6 +28,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.spop.poverlay.overlay.OverlayService
 import com.spop.poverlay.sensor.heartrate.HeartRateManager
+import com.spop.poverlay.media.GrupettoNotificationListenerService
 import com.spop.poverlay.releases.ReleaseChecker
 import com.spop.poverlay.ui.theme.PTONOverlayTheme
 import kotlinx.coroutines.CoroutineScope
@@ -37,6 +39,37 @@ import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private lateinit var viewModel: ConfigurationViewModel
+
+    /**
+     * Opens the notification-access screen so the user can enable Grupetto's media control.
+     *
+     * Some locked-down Peloton builds ship without this Settings activity, hence the fallback to
+     * the adb command - this audience already sideloads, so it is a usable instruction rather
+     * than a dead end. The feature still works without the grant, via media keys.
+     */
+    private fun openNotificationListenerSettings() {
+        val intents = listOf(
+            Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS),
+            Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS"),
+        )
+        for (intent in intents) {
+            try {
+                startActivity(intent)
+                return
+            } catch (_: ActivityNotFoundException) {
+                // Try the next one.
+            }
+        }
+        // Built from the real component so the command stays correct for the .dev build, whose
+        // applicationId is suffixed while the class name is not.
+        val component = ComponentName(this, GrupettoNotificationListenerService::class.java)
+        Toast.makeText(
+            this,
+            "This tablet has no notification access screen. Run:\n" +
+                "adb shell cmd notification allow_listener ${component.flattenToString()}",
+            Toast.LENGTH_LONG,
+        ).show()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -62,6 +95,9 @@ class MainActivity : ComponentActivity() {
         }
         viewModel.requestIgnoreBatteryOptimizations.observe(this) {
             requestIgnoreBatteryOptimizations()
+        }
+        viewModel.requestNotificationListenerAccess.observe(this) {
+            openNotificationListenerSettings()
         }
         viewModel.infoPopup.observe(this) {
             Toast.makeText(

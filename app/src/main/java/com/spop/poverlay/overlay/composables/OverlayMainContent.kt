@@ -16,6 +16,7 @@ import com.spop.poverlay.overlay.StatCard
 import com.spop.poverlay.overlay.StatCardWidth
 import com.spop.poverlay.ui.theme.MetricCadenceColor
 import com.spop.poverlay.ui.theme.MetricCalorieColor
+import androidx.compose.ui.graphics.Color
 import com.spop.poverlay.ui.theme.MetricHeartRateColor
 import com.spop.poverlay.ui.theme.MetricPowerColor
 import com.spop.poverlay.ui.theme.MetricResistanceColor
@@ -52,6 +53,7 @@ fun OverlayMainContent(
         maxHeartRate: String,
         avgHeartRate: String,
         showHeartRateCard: Boolean,
+        heartRateColor: Color = MetricHeartRateColor,
         onMetricSelected: (MetricType) -> Unit,
         onSpeedUnitClicked: () -> Unit,
         onChartClicked: () -> Unit
@@ -190,7 +192,8 @@ fun OverlayMainContent(
                         maxValue = maxHeartRate,
                         totalValue = avgHeartRate,
                         totalUnit = "avg",
-                        color = MetricHeartRateColor,
+                        // Tinted by the zone the rider is actually in.
+                        color = heartRateColor,
                         onClick = { onMetricSelected(MetricType.HEART_RATE) }
                 )
         }

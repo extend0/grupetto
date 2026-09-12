@@ -7,6 +7,8 @@ import androidx.compose.animation.core.TweenSpec
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.animateIntOffsetAsState
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -29,6 +31,10 @@ import androidx.compose.ui.zIndex
 import com.spop.poverlay.overlay.composables.OverlayMainContent
 import com.spop.poverlay.overlay.composables.OverlayMinimizedContent
 import com.spop.poverlay.sensor.heartrate.HeartRateManager
+import com.spop.poverlay.ui.theme.zoneColor
+import com.spop.poverlay.zone.EnforcementState
+import com.spop.poverlay.zone.ZoneRuntime
+import com.spop.poverlay.zone.zoneFor
 import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.drop
@@ -99,6 +105,8 @@ fun Overlay(
     }
 
     val minimized by sensorViewModel.isMinimized.collectAsState(initial = false)
+    val heartRateZones by HeartRateManager.heartRateZones.collectAsStateWithLifecycle(initialValue = null)
+    val zoneGoal by ZoneRuntime.snapshot.collectAsStateWithLifecycle(initialValue = null)
     val showHeartRateCard = connectedHeartRateDevice != null
     val location by locationState
     LaunchedEffect(showHeartRateCard, selectedMetric) {
@@ -240,6 +248,7 @@ fun Overlay(
                 maxHeartRate = "%.0f".format(maxHeartRate),
                 avgHeartRate = "%.0f".format(avgHeartRate),
                 showHeartRateCard = showHeartRateCard,
+                heartRateColor = zoneColor(heartRate?.let { zoneFor(it, heartRateZones) }),
                 onMetricSelected = { sensorViewModel.onMetricSelected(it) },
                 onSpeedUnitClicked = { sensorViewModel.onClickedSpeedUnit() },
                 onChartClicked = { sensorViewModel.onOverlayPressed() }
@@ -274,6 +283,19 @@ fun Overlay(
                 .offset { visibilityOffset },
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            // The warning: the strip stains toward the zone colour as the grace period runs out,
+            // so drifting out of the zone is visible before anything is taken away.
+            zoneGoal?.takeIf { it.state == EnforcementState.WARNING && it.scrimAlpha > 0f }
+                ?.let { warning ->
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(4.dp)
+                            .background(
+                                zoneColor(warning.targetZone).copy(alpha = warning.scrimAlpha)
+                            )
+                    )
+                }
 
             when (location) {
                 OverlayLocation.Top -> {
