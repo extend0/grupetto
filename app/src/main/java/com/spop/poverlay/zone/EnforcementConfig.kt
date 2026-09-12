@@ -99,6 +99,13 @@ data class EnforcementSnapshot(
     val holdRemainingMs: Long,
     val holdRequiredMs: Long,
     val penaltyElapsedMs: Long,
+    /**
+     * Seconds until the video pauses, or null when no pause is coming.
+     *
+     * Null for an over-zone warning and when the penalty is switched off, because in those
+     * cases nothing is going to happen and a countdown would be a lie.
+     */
+    val secondsUntilPenalty: Long?,
 ) {
     val progress: Float
         get() = if (goalSeconds <= 0) 0f else (creditSeconds.toFloat() / goalSeconds).coerceIn(0f, 1f)

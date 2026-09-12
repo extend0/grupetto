@@ -26,6 +26,10 @@ val Zone3Color = Color(0xFF66BB6A)            // Green
 val Zone4Color = Color(0xFFFFA726)            // Orange
 val Zone5Color = Color(0xFFEF5350)            // Red
 
+// Escalation accents, shared by the overlay strip and the penalty curtain
+val ZoneWarnScrimColor = Color(0xFFFFB300)    // Amber - you have drifted
+val ZonePenaltyScrimColor = Color(0xFFFF5252) // Red - a pause is coming
+
 /** Falls back to the plain heart rate colour when the zone is unknown. */
 fun zoneColor(zone: Int?): Color = when (zone) {
     1 -> Zone1Color

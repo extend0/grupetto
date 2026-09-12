@@ -173,6 +173,7 @@ fun Overlay(
             powerLabel = power,
             contentAlpha = timerAlpha,
             timerLabel = timerLabel,
+            zoneGoal = zoneGoal,
             cadenceLabel = rpm,
             speedLabel = speed,
             resistanceLabel = resistance,

@@ -28,7 +28,16 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.text.font.FontWeight
 import com.spop.poverlay.R
+import com.spop.poverlay.ui.theme.ZonePenaltyScrimColor
+import com.spop.poverlay.ui.theme.ZoneWarnScrimColor
+import com.spop.poverlay.ui.theme.zoneColor
+import com.spop.poverlay.zone.Drift
+import com.spop.poverlay.zone.EnforcementSnapshot
+import com.spop.poverlay.zone.EnforcementState
+import java.util.concurrent.TimeUnit
 import com.spop.poverlay.overlay.BackgroundColorDefault
 import com.spop.poverlay.overlay.OverlayLocation
 
@@ -46,6 +55,7 @@ fun OverlayMinimizedContent(
     contentAlpha: Float,
     timerLabel: String,
     timerPaused: Boolean,
+    zoneGoal: EnforcementSnapshot?,
     onTap: () -> Unit,
     onLongPress: () -> Unit,
     onOpenSettings: () -> Unit,
@@ -98,6 +108,12 @@ fun OverlayMinimizedContent(
         verticalAlignment = Alignment.CenterVertically
     ) {
         val infiniteTransition = rememberInfiniteTransition()
+
+        val countdown = zoneGoal?.secondsUntilPenalty
+        val isDrifting = zoneGoal?.drift != null &&
+            zoneGoal.state != EnforcementState.SUSPENDED &&
+            zoneGoal.state != EnforcementState.COMPLETE
+
         if (!isMinimized || showTimerWhenMinimized || timerPaused) {
 
             val timerAlpha = if (timerPaused) {
@@ -120,6 +136,37 @@ fun OverlayMinimizedContent(
                 timerLabel = timerLabel,
                 iconDrawable = R.drawable.ic_timer
             )
+        }
+
+        if (zoneGoal != null && zoneGoal.state != EnforcementState.IDLE) {
+            Spacer(modifier = Modifier.width(8.dp))
+            if (countdown != null) {
+                // Pulse only the countdown, not the whole strip: this sits on top of the
+                // rider's video, and animating everything would be unbearable.
+                val warningAlpha by infiniteTransition.animateFloat(
+                    initialValue = 1f,
+                    targetValue = 0.45f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(450, easing = LinearEasing),
+                        repeatMode = RepeatMode.Reverse
+                    )
+                )
+                Text(
+                    text = "PAUSING IN ${countdown}s",
+                    color = ZonePenaltyScrimColor,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    modifier = Modifier.alpha(warningAlpha)
+                )
+            } else {
+                OverlayTimerField(
+                    modifier = Modifier.width(132.dp),
+                    timerLabel = "${elapsed(zoneGoal.creditSeconds)}/${elapsed(zoneGoal.goalSeconds)}",
+                    iconDrawable = R.drawable.ic_hrm,
+                    tint = zoneColor(zoneGoal.targetZone),
+                )
+            }
         }
 
         Spacer(modifier = Modifier.width(6.dp))
@@ -180,9 +227,16 @@ fun OverlayMinimizedContent(
             )
             Spacer(modifier = Modifier.width(4.dp))
             OverlayTimerField(
-                modifier = Modifier.width(58.dp),
-                timerLabel = heartRateLabel,
-                iconDrawable = R.drawable.ic_hrm
+                modifier = Modifier.width(72.dp),
+                // The first signal that you are slipping, shown from the moment you leave the
+                // band rather than waiting for the warning stage.
+                timerLabel = heartRateLabel + when (zoneGoal?.drift) {
+                    Drift.BELOW -> " ↓"
+                    Drift.ABOVE -> " ↑"
+                    null -> ""
+                },
+                iconDrawable = R.drawable.ic_hrm,
+                tint = if (isDrifting) ZoneWarnScrimColor else Color.White,
             )
         }
     }
@@ -193,6 +247,7 @@ private fun OverlayTimerField(
     modifier: Modifier,
     timerLabel: String,
     iconDrawable: Int,
+    tint: Color = Color.White,
 ) {
     Row(
         modifier = modifier
@@ -210,11 +265,17 @@ private fun OverlayTimerField(
         )
         Text(
             timerLabel,
-            color = Color.White,
+            color = tint,
             fontSize = 19.sp,
             textAlign = TextAlign.Center,
             modifier = Modifier
                 .fillMaxWidth()
         )
     }
+}
+
+private fun elapsed(seconds: Long): String {
+    val minutes = TimeUnit.SECONDS.toMinutes(seconds)
+    val remainder = seconds - TimeUnit.MINUTES.toSeconds(minutes)
+    return "%d:%02d".format(minutes, remainder)
 }

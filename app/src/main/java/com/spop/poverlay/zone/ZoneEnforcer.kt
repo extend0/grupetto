@@ -227,6 +227,15 @@ class ZoneEnforcer(config: EnforcementConfig) {
         return progress * ceiling
     }
 
+    /** Only counts down when a pause is genuinely coming - see the field's documentation. */
+    private fun secondsUntilPenalty(now: Long): Long? {
+        if (state != EnforcementState.WARNING) return null
+        if (drift != Drift.BELOW || !canPenalize()) return null
+        val remaining = (config.warningMs - (now - stateEnteredAtMs)).coerceAtLeast(0)
+        // Round up, so a countdown reads 1 until the moment it actually fires.
+        return (remaining + 999) / 1000
+    }
+
     private fun snapshot(
         now: Long,
         bpm: Int?,
@@ -281,6 +290,7 @@ class ZoneEnforcer(config: EnforcementConfig) {
             holdRemainingMs = holdRemaining,
             holdRequiredMs = config.recoveryHoldMs,
             penaltyElapsedMs = penaltyStartedAtMs?.let { now - it } ?: 0L,
+            secondsUntilPenalty = secondsUntilPenalty(now),
         )
     }
 }

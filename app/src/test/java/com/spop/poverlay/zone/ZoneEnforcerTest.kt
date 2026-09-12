@@ -182,6 +182,45 @@ class ZoneEnforcerTest {
         assertTrue(seen.contains(PenaltyEffect.SetScrimAlpha(0f)))
     }
 
+    @Test
+    fun `the countdown reports how long until the video pauses`() {
+        start()
+        advance(31_000, 100)
+        assertEquals(EnforcementState.WARNING, last.state)
+        assertEquals(15L, last.secondsUntilPenalty)
+
+        advance(10_000, 100)
+        assertEquals(5L, last.secondsUntilPenalty)
+    }
+
+    @Test
+    fun `there is no countdown when nothing is going to happen`() {
+        // Over the ceiling: warns, but never pauses, so a countdown would be a lie.
+        start()
+        advance(60_000, 150)
+        assertEquals(EnforcementState.WARNING, last.state)
+        assertNull(last.secondsUntilPenalty)
+
+        // Same when the penalty is switched off entirely.
+        start(baseConfig.copy(penaltyEnabled = false))
+        advance(60_000, 100)
+        assertEquals(EnforcementState.WARNING, last.state)
+        assertNull(last.secondsUntilPenalty)
+    }
+
+    @Test
+    fun `the countdown is absent outside the warning stage`() {
+        start()
+        assertNull(last.secondsUntilPenalty)
+
+        advance(20_000, 100)
+        assertEquals(EnforcementState.GRACE, last.state)
+        assertNull(last.secondsUntilPenalty)
+
+        reachPenaltyFromHere()
+        assertNull(last.secondsUntilPenalty)
+    }
+
     // --- hysteresis -------------------------------------------------------------------------
 
     @Test
