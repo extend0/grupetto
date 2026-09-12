@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Debug source set overrides main, so the dev build is distinguishable everywhere the stable
+  one appears: launcher, foreground-service notification, and the notification-access list
+  where you have to pick the right one to grant.
+-->
+<resources>
+    <string name="app_name">Grupetto Dev</string>
+    <string name="media_control_service_label">Grupetto Dev media control</string>
+</resources>

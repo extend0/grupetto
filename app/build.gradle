@@ -52,6 +52,12 @@ android {
     }
 
     buildTypes {
+        debug {
+            // Installs alongside a stable build rather than replacing it: different
+            // applicationId means a separate app, separate settings and no signature clash.
+            applicationIdSuffix ".dev"
+            versionNameSuffix "-dev"
+        }
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
