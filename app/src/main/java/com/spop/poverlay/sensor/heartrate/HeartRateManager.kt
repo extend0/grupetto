@@ -42,6 +42,9 @@ object HeartRateManager {
     private const val PrefZone45 = "hr_zone_45"
     private const val PrefMatchByName = "hr_match_by_name"
 
+    const val OwnerSettings = "settings"
+    const val OwnerOverlay = "overlay"
+
     private const val ReconnectDelayMs = 3_000L
     private const val AutoReconnectScanMs = 10_000L
     private const val StaleHeartRateTimeoutMs = 12_000L
@@ -52,6 +55,17 @@ object HeartRateManager {
 
     private val _heartRate = MutableStateFlow<Int?>(null)
     val heartRate: StateFlow<Int?> = _heartRate
+
+    /**
+     * Milliseconds since the last real sample arrived, or [Long.MAX_VALUE] if there has been
+     * none. Read directly rather than derived from [heartRate], which is a StateFlow and so
+     * conflates a steady bpm into no emissions at all - a collector timing its own updates
+     * would read a rock-steady 132 as stale.
+     */
+    val heartRateAgeMs: Long
+        get() = lastHeartRateAtMs.let {
+            if (it == 0L) Long.MAX_VALUE else System.currentTimeMillis() - it
+        }
 
     private val _connectedDevice = MutableStateFlow<HeartRateDevice?>(null)
     val connectedDevice: StateFlow<HeartRateDevice?> = _connectedDevice
@@ -93,7 +107,13 @@ object HeartRateManager {
     private val stopped = AtomicBoolean(true)
     private var autoReconnectJob: kotlinx.coroutines.Job? = null
     private var manageSessionJob: kotlinx.coroutines.Job? = null
-    private var isManaging = false
+    /**
+     * Owners that want the staleness watchdog running. Reference counted because the settings
+     * dialog and the overlay service both ask for it independently - before this, closing the
+     * settings dialog silently switched off the watchdog the overlay was relying on, leaving a
+     * stale heart rate on screen (and, now, feeding zone enforcement) forever.
+     */
+    private val managingOwners = mutableSetOf<String>()
     @Volatile
     private var manualDisconnectRequested = false
 
@@ -133,7 +153,7 @@ object HeartRateManager {
         autoReconnectJob = null
         manageSessionJob?.cancel()
         manageSessionJob = null
-        isManaging = false
+        managingOwners.clear()
         stopDiscovery()
         try { bluetoothGatt?.disconnect() } catch (_: Exception) {}
         try { bluetoothGatt?.close() } catch (_: Exception) {}
@@ -227,16 +247,17 @@ object HeartRateManager {
         _isScanning.value = false
     }
 
-    fun setManaging(active: Boolean) {
-        isManaging = active
-        if (!active) {
+    @Synchronized
+    fun setManaging(active: Boolean, owner: String = OwnerSettings) {
+        if (active) managingOwners.add(owner) else managingOwners.remove(owner)
+        if (managingOwners.isEmpty()) {
             manageSessionJob?.cancel()
             manageSessionJob = null
             return
         }
-        manageSessionJob?.cancel()
+        if (manageSessionJob?.isActive == true) return
         manageSessionJob = scope.launch {
-            while (isManaging && !stopped.get()) {
+            while (managingOwners.isNotEmpty() && !stopped.get()) {
                 val connected = _connectedDevice.value
                 if (connected != null) {
                     val lastSignalAtMs = maxOf(lastHeartRateAtMs, lastConnectedAtMs)
@@ -254,6 +275,16 @@ object HeartRateManager {
                 delay(1_000L)
             }
         }
+    }
+
+    /**
+     * Debug-only heart rate injection, so the zone enforcement state machine can be exercised
+     * without wearing a strap and riding for 45 minutes. Callers must gate on BuildConfig.DEBUG.
+     */
+    fun injectDebugHeartRate(bpm: Int?) {
+        _heartRate.value = bpm
+        lastHeartRateAtMs = if (bpm == null) 0L else System.currentTimeMillis()
+        Timber.i("Debug heart rate injected: %s", bpm)
     }
 
     fun connectTo(device: HeartRateDevice) {
