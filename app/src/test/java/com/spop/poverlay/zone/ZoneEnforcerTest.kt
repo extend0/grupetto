@@ -24,7 +24,6 @@ class ZoneEnforcerTest {
         recoveryHoldSeconds = 5,
         hysteresisBpm = 4,
         staleHrMs = 10_000,
-        maxPenaltySeconds = 180,
         suspendWhenStopped = false,
     )
 
@@ -295,61 +294,41 @@ class ZoneEnforcerTest {
     // --- escape hatches ---------------------------------------------------------------------
 
     @Test
-    fun `a dead strap during a penalty releases the media`() {
+    fun `a dead strap during a penalty keeps the media paused`() {
         reachPenalty()
-        tick(null)
-        assertEquals(EnforcementState.SUSPENDED, last.state)
-        assertEquals(SuspendReason.NO_SIGNAL, last.suspendReason)
-        assertEquals(1, countOf(PenaltyEffect.ResumeMedia))
-        assertEquals(1, countOf(PenaltyEffect.HideCurtain))
+        advance(30_000, null)
+        assertEquals(EnforcementState.PENALTY, last.state)
+        assertEquals(0, countOf(PenaltyEffect.ResumeMedia))
+        assertEquals(0, countOf(PenaltyEffect.HideCurtain))
     }
 
     @Test
-    fun `a stale heart rate during a penalty releases the media`() {
+    fun `a stale heart rate during a penalty keeps the media paused`() {
         reachPenalty()
-        tick(100, hrAgeMs = 20_000)
-        assertEquals(EnforcementState.SUSPENDED, last.state)
-        assertEquals(SuspendReason.STALE, last.suspendReason)
-        assertEquals(1, countOf(PenaltyEffect.ResumeMedia))
+        advance(30_000, 100, hrAgeMs = 20_000)
+        assertEquals(EnforcementState.PENALTY, last.state)
+        assertEquals(0, countOf(PenaltyEffect.ResumeMedia))
     }
 
     @Test
-    fun `an unending penalty releases itself at the cap`() {
-        start(baseConfig.copy(maxPenaltySeconds = 20))
-        advance(31_000, 100)
-        advance(16_000, 100)
+    fun `putting the strap back on lets a held penalty recover normally`() {
+        reachPenalty()
+        advance(30_000, null)
+        advance(5_000, 130)
         assertEquals(EnforcementState.PENALTY, last.state)
 
-        advance(21_000, 100)
-        assertNotEquals(EnforcementState.PENALTY, last.state)
+        advance(1_000, 130)
+        assertEquals(EnforcementState.RECOVERING, last.state)
         assertEquals(1, countOf(PenaltyEffect.ResumeMedia))
-        assertEquals(1, countOf(PenaltyEffect.HideCurtain))
     }
 
     @Test
-    fun `a released penalty does not immediately re-trigger`() {
-        start(baseConfig.copy(maxPenaltySeconds = 20))
-        advance(31_000, 100)
-        advance(16_000, 100)
-        advance(21_000, 100)
-        // Still far below the floor, but enforcement stays released until re-entry.
-        advance(300_000, 100)
-        assertEquals(1, countOf(PenaltyEffect.PauseMedia))
-    }
-
-    @Test
-    fun `re-entering the zone re-arms enforcement after a cap release`() {
-        start(baseConfig.copy(maxPenaltySeconds = 20))
-        advance(31_000, 100)
-        advance(16_000, 100)
-        advance(21_000, 100)
-        advance(2_000, 130)
-        assertEquals(EnforcementState.IN_ZONE, last.state)
-
-        advance(31_000, 100)
-        advance(16_000, 100)
+    fun `a penalty never expires on its own`() {
+        reachPenalty()
+        // Half an hour below the zone: the video waits rather than playing to an empty room.
+        advance(1_800_000, 100)
         assertEquals(EnforcementState.PENALTY, last.state)
-        assertEquals(2, countOf(PenaltyEffect.PauseMedia))
+        assertEquals(0, countOf(PenaltyEffect.ResumeMedia))
     }
 
     @Test
@@ -376,6 +355,17 @@ class ZoneEnforcerTest {
         tick(100)
         assertNotEquals(EnforcementState.PENALTY, last.state)
         assertEquals(1, countOf(PenaltyEffect.ResumeMedia))
+    }
+
+    @Test
+    fun `turning the whole feature off mid penalty releases the media`() {
+        reachPenalty()
+        enforcer.updateConfig(baseConfig.copy(enabled = false))
+        now += 1_000
+        tick(100)
+        assertEquals(EnforcementState.SUSPENDED, last.state)
+        assertEquals(1, countOf(PenaltyEffect.ResumeMedia))
+        assertEquals(1, countOf(PenaltyEffect.HideCurtain))
     }
 
     // --- suspension -------------------------------------------------------------------------

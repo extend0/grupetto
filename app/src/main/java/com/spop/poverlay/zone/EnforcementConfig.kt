@@ -24,15 +24,13 @@ data class EnforcementConfig(
     val hysteresisBpm: Int = 4,
     /** No fresh sample for this long means the strap is gone; enforcement suspends. */
     val staleHrMs: Long = 10_000,
-    /** Escape hatch: a penalty that has run this long releases itself regardless of heart rate. */
-    val maxPenaltySeconds: Long = 180,
     /**
      * Whether to stop enforcing when the rider stops pedalling.
      *
      * Defaults to false, and that matters: on a stationary bike the easiest way to fall out of
      * a heart rate zone is to stop pedalling, so exempting it would be the one loophole that
      * defeats the whole feature. Getting off the bike for real is covered by
-     * [maxPenaltySeconds] and the curtain's release button instead.
+     * the curtain's release button and the notification action instead.
      */
     val suspendWhenStopped: Boolean = false,
 ) {
@@ -40,7 +38,6 @@ data class EnforcementConfig(
     val graceMs: Long get() = graceSeconds * 1000
     val warningMs: Long get() = warningSeconds * 1000
     val recoveryHoldMs: Long get() = recoveryHoldSeconds * 1000
-    val maxPenaltyMs: Long get() = maxPenaltySeconds * 1000
 }
 
 enum class EnforcementState {

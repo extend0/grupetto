@@ -49,9 +49,6 @@ class ZoneEnforcer(config: EnforcementConfig) {
     /** Set by the curtain's "End enforcement" button. Survives until [reset]. */
     private var releasedByUser = false
 
-    /** Set when a penalty hits [EnforcementConfig.maxPenaltySeconds]. Cleared on re-entry. */
-    private var releasedUntilReentry = false
-
     private var mediaPausedLatch = false
     private var curtainLatch = false
     private var scrimLatch = 0f
@@ -73,7 +70,6 @@ class ZoneEnforcer(config: EnforcementConfig) {
         drift = null
         suspendReason = null
         releasedByUser = false
-        releasedUntilReentry = false
         completedLatch = false
         // The media/curtain latches are deliberately kept: they track what the caller has
         // already applied, and the next tick emits whatever is needed to undo it.
@@ -103,8 +99,15 @@ class ZoneEnforcer(config: EnforcementConfig) {
         suspendReason = suspendReasonFor(input, bounds)
 
         if (suspendReason != null) {
-            drift = null
-            enter(EnforcementState.SUSPENDED, now)
+            // A live penalty outlives the loss of the signal. No heart rate usually means the
+            // strap came off with the rider, so the video should stay put; only the feature
+            // being switched off or its zones going away can release it here.
+            val penaltyOutlivesSuspension = state == EnforcementState.PENALTY &&
+                (suspendReason == SuspendReason.NO_SIGNAL || suspendReason == SuspendReason.STALE)
+            if (!penaltyOutlivesSuspension) {
+                drift = null
+                enter(EnforcementState.SUSPENDED, now)
+            }
         } else {
             advance(now, deltaMs, input.bpm!!, bounds!!)
         }
@@ -134,8 +137,6 @@ class ZoneEnforcer(config: EnforcementConfig) {
             band.floor != null && bpm < band.floor -> Drift.BELOW
             else -> Drift.ABOVE
         }
-
-        if (inside) releasedUntilReentry = false
 
         when (state) {
             EnforcementState.IDLE,
@@ -176,14 +177,11 @@ class ZoneEnforcer(config: EnforcementConfig) {
             }
 
             EnforcementState.PENALTY -> {
-                // Escape hatch: a penalty that has run too long releases itself, whatever the
-                // heart rate is doing. Someone whose strap reads garbage still gets their show back.
-                if (now - (penaltyStartedAtMs ?: now) >= config.maxPenaltyMs) {
-                    releasedUntilReentry = true
-                }
                 when {
-                    // Covers the curtain's release button, the timeout above, and the setting
-                    // being switched off mid-penalty.
+                    // The curtain's release button, or the setting being switched off
+                    // mid-penalty. A penalty never expires on its own: if you have stepped off
+                    // the bike, the video should be waiting for you rather than playing to an
+                    // empty room. The notification action is always there to let you out.
                     !canPenalize() -> enter(
                         if (inside) EnforcementState.IN_ZONE else EnforcementState.WARNING,
                         now,
@@ -209,8 +207,7 @@ class ZoneEnforcer(config: EnforcementConfig) {
         }
     }
 
-    private fun canPenalize() =
-        config.penaltyEnabled && !releasedByUser && !releasedUntilReentry
+    private fun canPenalize() = config.penaltyEnabled && !releasedByUser
 
     private fun enter(next: EnforcementState, now: Long) {
         if (next == state) return

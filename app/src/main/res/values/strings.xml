@@ -1,5 +1,6 @@
 <resources>
     <string name="app_name">Grupetto</string>
     <string name="media_control_service_label">Grupetto media control</string>
+    <string name="end_enforcement_action">End enforcement</string>
     <string name="overlay_notification">Peloton Overlay Service is Running</string>
 </resources>

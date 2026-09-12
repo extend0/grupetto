@@ -472,6 +472,24 @@ class OverlayService : LifecycleEnabledService() {
             .setOngoing(true)
             .setAutoCancel(true)
             .setContentIntent(pendingIntent)
+
+        // The escape hatch that does not depend on the curtain drawing. If addView ever fails,
+        // this is the only way left to get the media back without force-quitting the app - which
+        // is what makes it safe for a penalty to otherwise hold indefinitely.
+        val releaseIntent = Intent(this, OverlayService::class.java).apply {
+            action = ActionReleasePenalty
+        }
+        val releasePendingIntent = PendingIntent.getService(
+            this,
+            1,
+            releaseIntent,
+            intentFlags
+        )
+        notificationBuilder.addAction(
+            0,
+            getString(R.string.end_enforcement_action),
+            releasePendingIntent
+        )
         notificationBuilder.setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
         return notificationBuilder.build()
     }
