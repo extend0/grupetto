@@ -50,6 +50,9 @@ class ZoneEnforcementCoordinator(
 
         /** Foreground changes are a human switching apps; once a second is plenty. */
         private const val ForegroundPollMs = 1_000L
+
+        /** How long the escalation gives us to notice a foreground change before drawing. */
+        private const val ForegroundIdlePollMs = 5_000L
     }
 
     private val enforcer = ZoneEnforcer(EnforcementConfig())
@@ -95,8 +98,14 @@ class ZoneEnforcementCoordinator(
             } else {
                 jobs += scope.launch {
                     while (isActive) {
-                        monitor.refresh()
-                        delay(ForegroundPollMs)
+                        // The answer is only ever used to decide whether to draw a curtain or
+                        // a scrim, and neither exists outside an escalation - which on a good
+                        // ride is no time at all. Asking the system every second through a
+                        // clean forty-five minutes would be thousands of binder calls for a
+                        // question nobody asked.
+                        val drawing = isDrawing()
+                        if (drawing) monitor.refresh()
+                        delay(if (drawing) ForegroundPollMs else ForegroundIdlePollMs)
                     }
                 }
             }
@@ -147,6 +156,12 @@ class ZoneEnforcementCoordinator(
     private fun isEscalated(): Boolean {
         val state = ZoneRuntime.snapshot.value?.state
         return state == EnforcementState.PENALTY || state == EnforcementState.RECOVERING
+    }
+
+    /** Whether anything of ours is on screen, or about to be. */
+    private fun isDrawing(): Boolean {
+        val state = ZoneRuntime.snapshot.value?.state
+        return state == EnforcementState.WARNING || state == EnforcementState.PENALTY
     }
 
     private suspend fun tick() {

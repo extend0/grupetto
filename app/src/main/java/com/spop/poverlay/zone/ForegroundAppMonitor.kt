@@ -24,10 +24,19 @@ class ForegroundAppMonitor(private val context: Context) {
 
     companion object {
         /**
-         * How far back to look for a foreground change. Generous, because the query only
-         * returns events and a rider can sit on one screen for a long time.
+         * The narrowest look-back worth asking for. Only has to outrun the poll interval.
          */
-        private const val LookbackMs = 60_000L
+        private const val MinLookbackMs = 5_000L
+
+        /**
+         * The widest. Used on the first call, and after a stretch of not looking - a rider can
+         * sit on one screen for a long time, and the query returns events rather than a state,
+         * so too narrow a window comes back empty and tells us nothing.
+         */
+        private const val MaxLookbackMs = 60_000L
+
+        /** Slack on either side of the gap being covered, for clock jitter. */
+        private const val MarginMs = 2_000L
     }
 
     private val usageStats =
@@ -48,6 +57,8 @@ class ForegroundAppMonitor(private val context: Context) {
     @Volatile
     var foregroundPackage: String? = null
         private set
+
+    private var lastRefreshAtMs = 0L
 
     /** True when the rider is on a home screen or app drawer rather than something to watch. */
     val isLauncherForeground: Boolean
@@ -75,11 +86,25 @@ class ForegroundAppMonitor(private val context: Context) {
         return mode == AppOpsManager.MODE_ALLOWED
     }
 
-    /** Polls for the latest foreground change. Cheap enough for once a second. */
+    /**
+     * Polls for the latest foreground change.
+     *
+     * The window covers exactly the time we were not looking and no more. The query hands back
+     * a parcel of every event in it, so the width of the window is the difference between a
+     * fat binder call and a thin one - and asking for a minute of history every second, as
+     * this first did, is about twenty times the work needed to answer the same question.
+     */
     fun refresh() {
         val manager = usageStats ?: return
         val now = System.currentTimeMillis()
-        val events = runCatching { manager.queryEvents(now - LookbackMs, now) }.getOrNull() ?: return
+        val uncovered = if (lastRefreshAtMs == 0L) {
+            MaxLookbackMs
+        } else {
+            now - lastRefreshAtMs + MarginMs
+        }
+        val lookback = uncovered.coerceIn(MinLookbackMs, MaxLookbackMs)
+        val events = runCatching { manager.queryEvents(now - lookback, now) }.getOrNull() ?: return
+        lastRefreshAtMs = now
         val event = UsageEvents.Event()
         var latest: String? = null
         while (events.hasNextEvent()) {
