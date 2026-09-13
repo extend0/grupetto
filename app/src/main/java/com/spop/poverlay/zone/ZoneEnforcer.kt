@@ -122,6 +122,10 @@ class ZoneEnforcer(config: EnforcementConfig) {
 
         overlaySuppressed = input.overlaySuppressed
 
+        // Output is watched whether or not there is a heart rate. It is the only thing still
+        // reporting once the strap goes, and it is what riding blind is credited on.
+        effort.onPower(now, input.powerWatts)
+
         val bounds = zoneBounds(config.targetZone, input.boundaries)
         suspendReason = suspendReasonFor(input, bounds)
 
@@ -137,17 +141,27 @@ class ZoneEnforcer(config: EnforcementConfig) {
         }
 
         if (suspendReason != null) {
-            // A live penalty outlives the loss of the signal. No heart rate usually means the
-            // strap came off with the rider, so the video should stay put; only the feature
-            // being switched off or its zones going away can release it here.
-            val penaltyOutlivesSuspension = state == EnforcementState.PENALTY &&
-                (suspendReason == SuspendReason.NO_SIGNAL || suspendReason == SuspendReason.STALE)
-            if (!penaltyOutlivesSuspension) {
-                drift = null
-                enter(EnforcementState.SUSPENDED, now)
+            val signalLost = suspendReason == SuspendReason.NO_SIGNAL ||
+                suspendReason == SuspendReason.STALE
+            when {
+                // The strap is gone, but the bike can see the rider working. Losing a battery
+                // mid-ride should cost them nothing: the clock keeps running and the machine
+                // keeps its hands off the video.
+                signalLost && effort.vouchesForEffort() -> advanceBlind(now, deltaMs)
+
+                // A live penalty otherwise outlives the loss of the signal. No heart rate and
+                // no output usually means the strap came off with the rider, so the video
+                // should stay put; only the feature being switched off or its zones going away
+                // can release it here.
+                state == EnforcementState.PENALTY && signalLost -> Unit
+
+                else -> {
+                    drift = null
+                    enter(EnforcementState.SUSPENDED, now)
+                }
             }
         } else {
-            advance(now, deltaMs, judged!!, bounds!!, input.powerWatts)
+            advance(now, deltaMs, judged!!, bounds!!)
         }
 
         return snapshot(now, input.bpm, judged, input.powerWatts, bounds, input.boundaries)
@@ -180,12 +194,46 @@ class ZoneEnforcer(config: EnforcementConfig) {
         else -> null
     }
 
+    /**
+     * Runs the machine on output alone, for a rider whose strap has gone but who the bike can
+     * still see working.
+     *
+     * Nothing here can escalate. The whole point is that a heart rate nobody can read is not
+     * evidence against anyone - so this only ever credits time and lets riders out of
+     * penalties, never into one.
+     */
+    private fun advanceBlind(now: Long, deltaMs: Long) {
+        // There is no band to have drifted from without a reading to compare against it.
+        drift = null
+
+        when (state) {
+            // Holding the output that holds the zone is the same answer the penalty was
+            // demanding. A strap dying is not a reason to keep someone locked out.
+            EnforcementState.PENALTY -> {
+                val holdSince = holdStartedAtMs ?: now.also { holdStartedAtMs = it }
+                if (now - holdSince >= config.recoveryHoldMs) {
+                    recoveringUntilMs = now + RecoveringLingerMs
+                    enter(EnforcementState.RECOVERING, now)
+                }
+            }
+
+            EnforcementState.COMPLETE -> creditMs += deltaMs
+
+            EnforcementState.RIDING_BLIND -> {
+                creditMs += deltaMs
+                if (creditMs >= config.goalMs) enter(EnforcementState.COMPLETE, now)
+            }
+
+            // The first blind tick only establishes that we are blind; it pays for nothing.
+            else -> enter(EnforcementState.RIDING_BLIND, now)
+        }
+    }
+
     private fun advance(
         now: Long,
         deltaMs: Long,
         bpm: Int,
         bounds: ZoneBounds,
-        watts: Float?,
     ) {
         // Staying in the zone uses the raw band; getting back in has to clear the inset.
         // Warm-up is not "getting back in": nothing is escalating, so there is nothing to flap,
@@ -200,7 +248,7 @@ class ZoneEnforcer(config: EnforcementConfig) {
 
         // Fed before the transitions below, so the trend it reports describes the sample the
         // machine is about to act on rather than the one before it.
-        effort.onSample(now, bpm, watts, inside, config.smoothingTauMs)
+        effort.onSample(now, bpm, inside, config.smoothingTauMs)
 
         drift = when {
             inside -> null
@@ -210,7 +258,10 @@ class ZoneEnforcer(config: EnforcementConfig) {
 
         when (state) {
             EnforcementState.IDLE,
-            EnforcementState.SUSPENDED -> enter(
+            EnforcementState.SUSPENDED,
+            // A strap that has come back. Nothing about riding blind survives having a real
+            // reading again - the machine simply picks up from wherever the rider now is.
+            EnforcementState.RIDING_BLIND -> enter(
                 when {
                     inside -> EnforcementState.IN_ZONE
                     config.armAfterZoneSeconds > 0 && !hasEnteredZone -> EnforcementState.WARMUP
@@ -252,7 +303,10 @@ class ZoneEnforcer(config: EnforcementConfig) {
             EnforcementState.WARNING -> when {
                 inside -> enter(EnforcementState.IN_ZONE, now)
                 // Over-zone never escalates: pausing would reward someone riding too hard.
-                canPenalize() && drift == Drift.BELOW &&
+                // Neither does a reading the bike disagrees with: if output says the rider is
+                // holding the effort that holds their zone, a strap claiming otherwise has
+                // slipped, and pausing a video over it would be the app's mistake, not theirs.
+                canPenalize() && drift == Drift.BELOW && !effort.vouchesForEffort() &&
                     now - stateEnteredAtMs >= config.warningMs -> enter(EnforcementState.PENALTY, now)
                 else -> Unit
             }
@@ -334,6 +388,7 @@ class ZoneEnforcer(config: EnforcementConfig) {
     private fun secondsUntilPenalty(now: Long): Long? {
         if (state != EnforcementState.WARNING) return null
         if (drift != Drift.BELOW || !canPenalize()) return null
+        if (effort.vouchesForEffort()) return null
         val remaining = (config.warningMs - (now - stateEnteredAtMs)).coerceAtLeast(0)
         // Round up, so a countdown reads 1 until the moment it actually fires.
         return (remaining + 999) / 1000
@@ -378,7 +433,7 @@ class ZoneEnforcer(config: EnforcementConfig) {
         // Nothing to judge without a band and a reading. Warm-up is deliberately included:
         // knowing how sustainable the effort is matters most before anything is enforced.
         val health = if (bounds != null && smoothedBpm != null) {
-            quantize(effort.health(smoothedBpm, bounds, watts), HealthQuantum)
+            quantize(effort.health(smoothedBpm, bounds), HealthQuantum)
         } else {
             null
         }

@@ -46,6 +46,16 @@ class EffortMonitor {
         /** Output at or below this fraction of holding power scores zero. */
         const val CollapsedRatio = 0.7f
 
+        /**
+         * Output at or above this fraction of holding power is enough to believe a rider is
+         * still doing the work without a heart rate to prove it. Stricter than
+         * [CollapsedRatio]: this vouches for someone, rather than merely not condemning them.
+         */
+        const val VouchRatio = 0.85f
+
+        /** Output wobbles with every pedal stroke, so it is smoothed before it is trusted. */
+        private const val PowerTauMs = 10_000.0
+
         /** Headroom at or beyond this stops constraining the score. */
         const val FullHeadroomSeconds = 45f
 
@@ -70,6 +80,8 @@ class EffortMonitor {
 
     private var slowBpm: Double? = null
     private var lastSampleAtMs: Long? = null
+    private var smoothedWattsValue: Double? = null
+    private var lastPowerAtMs: Long? = null
     private var baselineWatts: Double? = null
     private var steadyInZoneMs = 0L
 
@@ -81,26 +93,72 @@ class EffortMonitor {
     val holdingWatts: Float?
         get() = baselineWatts?.takeIf { steadyInZoneMs >= BaselineReadyMs }?.toFloat()
 
+    /** Smoothed output. What every judgement about power is actually made on. */
+    val smoothedWatts: Float? get() = smoothedWattsValue?.toFloat()
+
     fun reset() {
         slowBpm = null
         lastSampleAtMs = null
+        smoothedWattsValue = null
+        lastPowerAtMs = null
         baselineWatts = null
         steadyInZoneMs = 0
         trendBpmPerMin = null
     }
 
     /**
+     * Feeds output, on every tick, heart rate or no heart rate.
+     *
+     * Kept separate from [onSample] precisely because it must keep running when the strap has
+     * gone: output is the only thing still reporting then, and it is what a rider riding blind
+     * is credited on.
+     */
+    fun onPower(nowMs: Long, watts: Float?) {
+        if (watts == null || watts < 0f) return
+        val previous = smoothedWattsValue
+        val previousAt = lastPowerAtMs
+        val dt = previousAt?.let { nowMs - it } ?: -1L
+        lastPowerAtMs = nowMs
+        if (dt > StaleSessionMs) {
+            // Nothing at all has arrived for minutes - not even a pedal stroke. Whatever this
+            // is, it is not the ride we were watching.
+            reset()
+            lastPowerAtMs = nowMs
+        }
+        if (smoothedWattsValue == null || previous == null || dt <= 0L || dt > StaleSessionMs) {
+            smoothedWattsValue = watts.toDouble()
+            return
+        }
+        smoothedWattsValue = previous + (1.0 - exp(-dt / PowerTauMs)) * (watts - previous)
+    }
+
+    /**
+     * Whether output alone is good enough to believe the rider is still doing the work.
+     *
+     * Needs a holding figure, which takes a minute of steady riding *in the zone* to earn - so
+     * this can only ever vouch for someone who has already proved, with a heart rate, what
+     * their zone costs. Taking the strap off is not a way to get here.
+     */
+    fun vouchesForEffort(): Boolean {
+        val holding = holdingWatts ?: return false
+        val watts = smoothedWattsValue ?: return false
+        return watts >= holding * VouchRatio
+    }
+
+    /**
      * Feeds one tick of usable data. [bpm] is the conditioned reading - the one the machine is
      * judging - so that the trend describes the same signal every other decision is made on.
      */
-    fun onSample(nowMs: Long, bpm: Int, watts: Float?, inZone: Boolean, smoothingTauMs: Long) {
+    fun onSample(nowMs: Long, bpm: Int, inZone: Boolean, smoothingTauMs: Long) {
         val previousAt = lastSampleAtMs
         val dt = previousAt?.let { nowMs - it } ?: -1L
 
         if (previousAt == null || dt <= 0L || dt > StaleSessionMs) {
-            // First sample, a clock that went backwards, or a gap long enough that nothing
-            // learned before it still describes whoever is on the bike now.
-            if (dt > StaleSessionMs) reset()
+            // A long gap invalidates the *trend* - nobody knows what the heart rate did in
+            // between - but not what was learned about output. A rider whose strap died for
+            // three minutes while they kept pedalling has not unlearned what their zone costs,
+            // and making them earn it back would be the second punishment for one flat battery.
+            if (dt > StaleSessionMs) trendBpmPerMin = null
             lastSampleAtMs = nowMs
             slowBpm = bpm.toDouble()
             return
@@ -114,15 +172,20 @@ class EffortMonitor {
         val trend = ((bpm - slow) / SlopeSpanMs * 60_000.0).toFloat()
         trendBpmPerMin = trend
 
-        if (!inZone || watts == null || watts <= 0f || abs(trend) > SteadyBpmPerMin) return
+        // Learned from smoothed output, not the raw figure: a single hard pedal stroke is not
+        // evidence about what the zone costs.
+        val steadyWatts = smoothedWattsValue
+        if (!inZone || steadyWatts == null || steadyWatts <= 0.0 || abs(trend) > SteadyBpmPerMin) {
+            return
+        }
 
         steadyInZoneMs += dt
         val previous = baselineWatts
         baselineWatts = if (previous == null) {
-            watts.toDouble()
+            steadyWatts
         } else {
-            val tau = if (watts < previous) BaselineFallTauMs else BaselineRiseTauMs
-            previous + (1.0 - exp(-dt.toDouble() / tau)) * (watts - previous)
+            val tau = if (steadyWatts < previous) BaselineFallTauMs else BaselineRiseTauMs
+            previous + (1.0 - exp(-dt.toDouble() / tau)) * (steadyWatts - previous)
         }
     }
 
@@ -154,7 +217,7 @@ class EffortMonitor {
      * Riding *above* the zone scores full health. The ceiling is a nag, never a penalty, so as
      * far as this is concerned someone over their zone is in no danger of losing it.
      */
-    fun health(bpm: Int, band: ZoneBounds, watts: Float?): Float {
+    fun health(bpm: Int, band: ZoneBounds): Float {
         val floor = band.floor
         var health = if (floor == null) {
             1f
@@ -164,6 +227,7 @@ class EffortMonitor {
         }
 
         val holding = holdingWatts
+        val watts = smoothedWatts
         if (holding != null && holding > 0f && watts != null) {
             val ratio = watts / holding
             health *= ((ratio - CollapsedRatio) / (1f - CollapsedRatio)).coerceIn(0f, 1f)

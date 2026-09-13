@@ -340,6 +340,11 @@ private fun NumberField(
  * "suspended" on its own tells the rider nothing actionable - the reason is what they can act on.
  */
 private fun statusLabel(snapshot: EnforcementSnapshot): String {
+    // Riding blind is the one state where the rider should be told what the app is doing, or
+    // a working strap and a dead one look identical from the saddle.
+    if (snapshot.state == EnforcementState.RIDING_BLIND) {
+        return "no heart rate - counting on your output"
+    }
     // Say what ends the warm-up, not that one is happening - the rider needs the exit condition.
     if (snapshot.state == EnforcementState.WARMUP) {
         return "warming up - starts when you reach Zone ${snapshot.targetZone}"

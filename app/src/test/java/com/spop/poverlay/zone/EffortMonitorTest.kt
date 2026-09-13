@@ -17,7 +17,16 @@ class EffortMonitorTest {
     private fun feed(seconds: Int, bpm: Int, watts: Float?, inZone: Boolean = true) {
         repeat(seconds) {
             now += 1_000
-            monitor.onSample(now, bpm, watts, inZone, smoothingTauMs = 0)
+            monitor.onPower(now, watts)
+            monitor.onSample(now, bpm, inZone, smoothingTauMs = 0)
+        }
+    }
+
+    /** Output only, the way a tick looks once the strap has gone. */
+    private fun feedPower(seconds: Int, watts: Float?) {
+        repeat(seconds) {
+            now += 1_000
+            monitor.onPower(now, watts)
         }
     }
 
@@ -33,7 +42,8 @@ class EffortMonitorTest {
         for (second in 0 until seconds) {
             now += 1_000
             val bpm = from + (second / everySeconds) * perStep
-            monitor.onSample(now, bpm, watts, inZone, smoothingTauMs = 0)
+            monitor.onPower(now, watts)
+            monitor.onSample(now, bpm, inZone, smoothingTauMs = 0)
         }
     }
 
@@ -79,13 +89,15 @@ class EffortMonitorTest {
     }
 
     @Test
-    fun `a long gap starts a new session`() {
+    fun `a gap with nothing arriving at all starts a new session`() {
         feed(70, bpm = 130, watts = 150f)
         assertNotNull(monitor.holdingWatts)
 
-        // Three minutes later. Different ride, quite possibly a different rider.
+        // Three minutes of silence - no heart rate, and not a pedal stroke either. Whatever
+        // comes next is a different ride, quite possibly a different rider.
         now += 180_000
-        monitor.onSample(now, 130, 150f, inZone = true, smoothingTauMs = 0)
+        monitor.onPower(now, 150f)
+        monitor.onSample(now, 130, inZone = true, smoothingTauMs = 0)
         assertNull(monitor.holdingWatts)
         assertNull(monitor.trendBpmPerMin)
     }
@@ -146,41 +158,93 @@ class EffortMonitorTest {
     fun `health tracks where the rider sits in the band`() {
         feed(120, bpm = 130, watts = 150f)
         // Halfway up a twenty bpm band, output exactly at what has been holding it.
-        assertEquals(0.5f, monitor.health(130, band, 150f), 0.05f)
-        assertEquals(0.25f, monitor.health(125, band, 150f), 0.05f)
+        assertEquals(0.5f, monitor.health(130, band), 0.05f)
+        assertEquals(0.25f, monitor.health(125, band), 0.05f)
     }
 
     @Test
     fun `health collapses when the output goes even though the heart rate has not`() {
         feed(120, bpm = 130, watts = 150f)
-        val holding = monitor.health(130, band, 150f)
+        val holding = monitor.health(130, band)
 
-        // Same heart rate, comfortably inside the band - and nothing in the heart rate has
-        // happened yet. The output is what gives it away.
-        val easedOff = monitor.health(130, band, 120f)
+        // The rider eases right off. Nothing in the heart rate has happened yet, and will not
+        // for another half a minute - the output is the only thing that gives it away.
+        feedPower(15, 100f)
+        val easedOff = monitor.health(130, band)
         assertTrue("$easedOff should be well under $holding", easedOff < holding / 2f)
 
-        assertEquals(0f, monitor.health(130, band, 90f), 0.01f)
+        feedPower(20, 60f)
+        assertEquals(0f, monitor.health(130, band), 0.01f)
     }
 
     @Test
     fun `health is full above the band`() {
         feed(120, bpm = 130, watts = 150f)
-        assertEquals(1f, monitor.health(150, band, 150f), 0.01f)
+        assertEquals(1f, monitor.health(150, band), 0.01f)
     }
 
     @Test
     fun `health is nothing below the band`() {
         feed(120, bpm = 130, watts = 150f)
-        assertEquals(0f, monitor.health(110, band, 150f), 0.01f)
+        assertEquals(0f, monitor.health(110, band), 0.01f)
     }
 
     @Test
     fun `health ignores output until there is a holding figure to compare against`() {
-        feed(20, bpm = 130, watts = 150f)
+        feed(20, bpm = 130, watts = 20f)
         assertNull(monitor.holdingWatts)
         // Buffer alone, rather than a score built on a baseline that has not been earned.
-        assertEquals(0.5f, monitor.health(130, band, 20f), 0.05f)
+        assertEquals(0.5f, monitor.health(130, band), 0.05f)
+    }
+
+    // --- vouching for a rider with no strap ---------------------------------------------------
+
+    @Test
+    fun `nothing is vouched for before a holding figure exists`() {
+        feed(20, bpm = 130, watts = 300f)
+        assertNull(monitor.holdingWatts)
+        // Pedalling hard is not evidence on its own. Only a rider who has already shown, with
+        // a heart rate, what their zone costs can be taken on trust later.
+        assertTrue(!monitor.vouchesForEffort())
+    }
+
+    @Test
+    fun `holding the output that holds the zone vouches for the rider`() {
+        feed(70, bpm = 130, watts = 150f)
+        assertTrue(monitor.vouchesForEffort())
+
+        // Still working, if a little softer. Output wanders; the bar is not a knife edge.
+        feedPower(20, 140f)
+        assertTrue(monitor.vouchesForEffort())
+    }
+
+    @Test
+    fun `easing right off stops vouching for the rider`() {
+        feed(70, bpm = 130, watts = 150f)
+        feedPower(30, 90f)
+        assertTrue(!monitor.vouchesForEffort())
+    }
+
+    @Test
+    fun `stopping stops vouching for the rider`() {
+        feed(70, bpm = 130, watts = 150f)
+        feedPower(40, 0f)
+        assertTrue(!monitor.vouchesForEffort())
+    }
+
+    @Test
+    fun `a strap that dies for minutes does not cost the rider what output already taught`() {
+        feed(70, bpm = 130, watts = 150f)
+        val holding = monitor.holdingWatts!!
+
+        // Three minutes blind, still pedalling. The trend is gone - nobody knows what the
+        // heart rate did - but what the zone costs was never in doubt.
+        feedPower(180, 150f)
+        assertTrue(monitor.vouchesForEffort())
+
+        monitor.onSample(now, 130, inZone = true, smoothingTauMs = 0)
+        assertNull(monitor.trendBpmPerMin)
+        assertEquals(holding, monitor.holdingWatts!!, 1f)
     }
 
     @Test
@@ -190,6 +254,6 @@ class EffortMonitorTest {
         ramp(200, from = 240, perStep = -1, everySeconds = 1, watts = 150f)
         val headroom = monitor.headroomSeconds(135, band.floor)!!
         assertTrue("was $headroom", headroom < 30)
-        assertTrue(monitor.health(135, band, 150f) < 0.6f)
+        assertTrue(monitor.health(135, band) < 0.6f)
     }
 }

@@ -754,9 +754,10 @@ class ZoneEnforcerTest {
         val holding = last.effortHealth!!
         assertTrue("was $holding", holding > 0.4f)
 
-        // The rider eases right off. Their heart rate has not had time to react and will not
-        // for another half a minute - but the effort behind it has already gone.
-        advance(2_000, 130, watts = 120f)
+        // The rider eases right off. Their heart rate has not moved and will not for another
+        // half a minute - as far as the band is concerned they are still comfortably in the
+        // zone - but the effort behind it has already gone, and the score says so.
+        advance(12_000, 130, watts = 60f)
         assertEquals(EnforcementState.IN_ZONE, last.state)
         assertNull(last.drift)
         assertTrue("was ${last.effortHealth}", last.effortHealth!! < holding / 2f)
@@ -868,5 +869,105 @@ class ZoneEnforcerTest {
         assertEquals(EnforcementState.PENALTY, last.state)
         advance(3_000, 150)
         assertEquals(EnforcementState.RECOVERING, last.state)
+    }
+
+    // --- riding blind -----------------------------------------------------------------------
+
+    /** A minute of steady in-zone riding, which is what earns a holding figure. */
+    private fun establishHolding(watts: Float = 150f): EnforcementSnapshot {
+        start()
+        advance(70_000, 130, watts = watts)
+        assertNotNull(last.holdingWatts)
+        return last
+    }
+
+    @Test
+    fun `a strap that dies while the rider works keeps the clock running`() {
+        establishHolding()
+        val earned = last.creditSeconds
+
+        advance(20_000, null, watts = 150f)
+        assertEquals(EnforcementState.RIDING_BLIND, last.state)
+        assertTrue("credit went from $earned to ${last.creditSeconds}", last.creditSeconds > earned)
+        assertNull(last.drift)
+        assertEquals(0, countOf(PenaltyEffect.PauseMedia))
+    }
+
+    @Test
+    fun `a strap that dies while the rider stops suspends as before`() {
+        establishHolding()
+        advance(40_000, null, watts = 0f)
+        assertEquals(EnforcementState.SUSPENDED, last.state)
+    }
+
+    @Test
+    fun `riding blind can finish the goal`() {
+        start(baseConfig.copy(goalSeconds = 80))
+        advance(70_000, 130, watts = 150f)
+        advance(20_000, null, watts = 150f)
+        assertEquals(EnforcementState.COMPLETE, last.state)
+        assertEquals(1, countOf(PenaltyEffect.GoalCompleted))
+    }
+
+    @Test
+    fun `the strap coming back picks up from wherever the rider is`() {
+        establishHolding()
+        advance(10_000, null, watts = 150f)
+        assertEquals(EnforcementState.RIDING_BLIND, last.state)
+
+        advance(2_000, 130, watts = 150f)
+        assertEquals(EnforcementState.IN_ZONE, last.state)
+    }
+
+    @Test
+    fun `a penalty lifts when the strap dies but the rider keeps working`() {
+        establishHolding()
+        // Out of the zone and off the pace, so the penalty is earned honestly.
+        advance(31_000, 100, watts = 60f)
+        advance(16_000, 100, watts = 60f)
+        assertEquals(EnforcementState.PENALTY, last.state)
+
+        // The strap goes, and the rider gets back on it. Nobody can read their heart rate, but
+        // the bike can see the work - so the video comes back.
+        advance(30_000, null, watts = 150f)
+        assertEquals(1, countOf(PenaltyEffect.ResumeMedia))
+        assertEquals(1, countOf(PenaltyEffect.HideCurtain))
+    }
+
+    @Test
+    fun `a penalty still holds when the strap dies and the rider does not`() {
+        establishHolding()
+        advance(31_000, 100, watts = 60f)
+        advance(16_000, 100, watts = 60f)
+        assertEquals(EnforcementState.PENALTY, last.state)
+
+        advance(60_000, null, watts = 40f)
+        assertEquals(EnforcementState.PENALTY, last.state)
+        assertEquals(0, countOf(PenaltyEffect.ResumeMedia))
+    }
+
+    // --- output overruling a strap ------------------------------------------------------------
+
+    @Test
+    fun `output still at holding power stops a penalty the strap asked for`() {
+        establishHolding()
+
+        // The strap says the rider fell out of their zone; the bike says they are working
+        // exactly as hard as they were. A slipped strap must not pause anybody's video.
+        advance(31_000, 100, watts = 150f)
+        assertEquals(EnforcementState.WARNING, last.state)
+        assertNull(last.secondsUntilPenalty)
+
+        advance(60_000, 100, watts = 150f)
+        assertEquals(EnforcementState.WARNING, last.state)
+        assertEquals(0, countOf(PenaltyEffect.PauseMedia))
+    }
+
+    @Test
+    fun `a rider who has genuinely eased off is still penalized`() {
+        establishHolding()
+        advance(31_000, 100, watts = 70f)
+        advance(16_000, 100, watts = 70f)
+        assertEquals(EnforcementState.PENALTY, last.state)
     }
 }

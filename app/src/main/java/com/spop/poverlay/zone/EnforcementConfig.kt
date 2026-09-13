@@ -84,6 +84,11 @@ enum class EnforcementState {
      */
     WARMUP,
     IN_ZONE,
+    /**
+     * The strap has gone, but the bike can still see the rider working hard enough to hold
+     * their zone. Credit runs; nothing escalates. See [EffortMonitor.vouchesForEffort].
+     */
+    RIDING_BLIND,
     /** Out of band, still inside the grace window. No penalty, no credit. */
     GRACE,
     /** Past grace. Scrim ramping. Terminal for over-zone drift and for released enforcement. */
