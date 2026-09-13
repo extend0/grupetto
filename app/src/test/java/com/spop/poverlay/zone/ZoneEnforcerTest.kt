@@ -51,8 +51,9 @@ class ZoneEnforcerTest {
         bpm: Int?,
         hrAgeMs: Long = 0,
         isMoving: Boolean = true,
+        watts: Float? = null,
     ): EnforcementSnapshot {
-        last = enforcer.tick(TickInput(now, bpm, hrAgeMs, boundaries, isMoving))
+        last = enforcer.tick(TickInput(now, bpm, hrAgeMs, boundaries, isMoving, watts))
         seen += last.effects
         return last
     }
@@ -63,12 +64,13 @@ class ZoneEnforcerTest {
         bpm: Int?,
         hrAgeMs: Long = 0,
         isMoving: Boolean = true,
+        watts: Float? = null,
     ): EnforcementSnapshot {
         var remaining = ms
         while (remaining > 0) {
             val step = minOf(1_000L, remaining)
             now += step
-            tick(bpm, hrAgeMs, isMoving)
+            tick(bpm, hrAgeMs, isMoving, watts)
             remaining -= step
         }
         return last
@@ -702,5 +704,50 @@ class ZoneEnforcerTest {
             tick(150, hrAgeMs = now - sampleAt)
         }
         assertEquals(afterSample, last.smoothedBpm)
+    }
+
+    // --- effort health ----------------------------------------------------------------------
+
+    @Test
+    fun `a collapse in output shows in health before the heart rate moves`() {
+        start(smoothed)
+        // Two minutes holding the zone at a steady 150 W teaches what the zone costs today.
+        advance(120_000, 130, watts = 150f)
+        val holding = last.effortHealth!!
+        assertTrue("was $holding", holding > 0.4f)
+
+        // The rider eases right off. Their heart rate has not had time to react and will not
+        // for another half a minute - but the effort behind it has already gone.
+        advance(2_000, 130, watts = 120f)
+        assertEquals(EnforcementState.IN_ZONE, last.state)
+        assertNull(last.drift)
+        assertTrue("was ${last.effortHealth}", last.effortHealth!! < holding / 2f)
+    }
+
+    @Test
+    fun `health is reported through the warm-up`() {
+        startCold()
+        advance(30_000, 90, watts = 60f)
+        assertEquals(EnforcementState.WARMUP, last.state)
+        // Below the band, so nothing yet - but a figure, not a blank.
+        assertEquals(0f, last.effortHealth!!, 0.01f)
+    }
+
+    @Test
+    fun `there is no health to report while suspended`() {
+        start()
+        advance(15_000, null)
+        assertEquals(EnforcementState.SUSPENDED, last.state)
+        assertNull(last.effortHealth)
+        assertNull(last.headroomSeconds)
+    }
+
+    @Test
+    fun `health needs no output at all to be useful`() {
+        start(smoothed)
+        advance(60_000, 130)
+        // Buffer alone: halfway up the band with nothing known about the bike.
+        assertEquals(0.5f, last.effortHealth!!, 0.05f)
+        assertNull(last.holdingWatts)
     }
 }

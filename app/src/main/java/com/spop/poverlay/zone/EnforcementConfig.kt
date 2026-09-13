@@ -115,6 +115,13 @@ data class TickInput(
     /** HeartRateManager.heartRateZones; null when the user has not configured them. */
     val boundaries: List<Int>?,
     val isMoving: Boolean,
+    /**
+     * Output in watts, or null when the bike is not reporting it.
+     *
+     * The only input here that does not lag: it is what the rider is doing right now, rather
+     * than what their heart has caught up to.
+     */
+    val powerWatts: Float? = null,
 )
 
 data class EnforcementSnapshot(
@@ -149,6 +156,22 @@ data class EnforcementSnapshot(
      * cases nothing is going to happen and a countdown would be a lie.
      */
     val secondsUntilPenalty: Long?,
+    /**
+     * How sustainable the current effort is: 1 comfortably, 0 about to lose the zone. Null
+     * whenever there is nothing to judge - suspended, or no zones configured.
+     *
+     * Unlike [secondsUntilPenalty] this is continuous and always present, which makes it the
+     * signal a persistent indicator should be driven from. It is deliberately quantized: this
+     * rides on top of someone's video, and a value jittering in its third decimal would repaint
+     * on every tick of a ride.
+     */
+    val effortHealth: Float?,
+    /** Seconds before the current decline reaches the floor; null when not heading there. */
+    val headroomSeconds: Long?,
+    /** The output that has been holding this rider's zone. Null until enough steady riding. */
+    val holdingWatts: Float?,
+    /** Rate of change of the judged heart rate. Positive while climbing. */
+    val trendBpmPerMin: Float?,
 ) {
     val progress: Float
         get() = if (goalSeconds <= 0) 0f else (creditSeconds.toFloat() / goalSeconds).coerceIn(0f, 1f)

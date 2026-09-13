@@ -255,6 +255,7 @@ class OverlayService : LifecycleEnabledService() {
             scope = lifecycleScope,
             configFlow = configurationRepository.zoneEnforcementConfig,
             isMovingFlow = sensorViewModel.isMoving,
+            powerFlow = sensorInterface.power,
             media = MediaPenaltyController(applicationContext),
             persistence = ZonePersistence(applicationContext),
             onShowCurtain = ::showPenaltyCurtain,

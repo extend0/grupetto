@@ -24,6 +24,8 @@ class ZoneEnforcementCoordinator(
     private val scope: CoroutineScope,
     private val configFlow: Flow<EnforcementConfig>,
     private val isMovingFlow: StateFlow<Boolean>,
+    /** Output in watts. The one input that does not lag the rider's effort. */
+    private val powerFlow: Flow<Float>,
     private val media: MediaPenaltyController,
     private val persistence: ZonePersistence,
     private val onShowCurtain: () -> Unit,
@@ -37,6 +39,12 @@ class ZoneEnforcementCoordinator(
         private const val IdlePeriodMs = 500L
 
         private const val PersistIntervalMs = 15_000L
+
+        /**
+         * Effort health drives no side effect yet, so the log is the only way to watch it
+         * behave on a real ride before anything is built on top of it.
+         */
+        private const val EffortLogIntervalMs = 15_000L
     }
 
     private val enforcer = ZoneEnforcer(EnforcementConfig())
@@ -44,6 +52,13 @@ class ZoneEnforcementCoordinator(
     private var jobs = mutableListOf<Job>()
     private var lastPersistedAtMs = 0L
     private var lastLoggedState: EnforcementState? = null
+
+    // Read synchronously from ticks on another coroutine, so it must be volatile rather than
+    // collected into the tick itself - the tick must never wait on the bike.
+    @Volatile
+    private var latestWatts: Float? = null
+
+    private var lastEffortLogMs = 0L
 
     fun start() {
         if (jobs.isNotEmpty()) return
@@ -62,6 +77,9 @@ class ZoneEnforcementCoordinator(
             configFlow.collect { config ->
                 mutex.withLock { enforcer.updateConfig(config) }
             }
+        }
+        jobs += scope.launch {
+            powerFlow.collect { latestWatts = it }
         }
         // Heart rate arrives at roughly 1 Hz; ticking on arrival keeps recovery snappy.
         jobs += scope.launch {
@@ -121,6 +139,7 @@ class ZoneEnforcementCoordinator(
                     hrAgeMs = HeartRateManager.heartRateAgeMs,
                     boundaries = HeartRateManager.heartRateZones.value,
                     isMoving = isMovingFlow.value,
+                    powerWatts = latestWatts,
                 )
             )
         }
@@ -134,9 +153,23 @@ class ZoneEnforcementCoordinator(
             lastLoggedState = snapshot.state
         }
 
+        logEffortIfDue(snapshot)
         snapshot.effects.forEach(::apply)
         ZoneRuntime.publish(snapshot)
         persistIfDue(snapshot)
+    }
+
+    private fun logEffortIfDue(snapshot: EnforcementSnapshot) {
+        val health = snapshot.effortHealth ?: return
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastEffortLogMs < EffortLogIntervalMs) return
+        lastEffortLogMs = now
+        Timber.i(
+            "Zone effort health=%.2f bpm=%s trend=%s/min watts=%s holding=%s headroom=%ss",
+            health, snapshot.smoothedBpm, snapshot.trendBpmPerMin?.let { "%.1f".format(it) },
+            latestWatts?.let { "%.0f".format(it) },
+            snapshot.holdingWatts?.let { "%.0f".format(it) }, snapshot.headroomSeconds,
+        )
     }
 
     private fun apply(effect: PenaltyEffect) {

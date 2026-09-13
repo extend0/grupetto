@@ -1,6 +1,7 @@
 package com.spop.poverlay.zone
 
 import kotlin.math.abs
+import kotlin.math.roundToInt
 
 /**
  * The zone enforcement state machine.
@@ -31,6 +32,9 @@ class ZoneEnforcer(config: EnforcementConfig) {
         const val MaxNagScrim = 0.35f
 
         private const val ScrimQuantum = 0.05f
+
+        /** Effort health is shown continuously, so it is rounded to keep an indicator still. */
+        private const val HealthQuantum = 0.02f
     }
 
     var config: EnforcementConfig = config
@@ -47,6 +51,8 @@ class ZoneEnforcer(config: EnforcementConfig) {
     private var suspendReason: SuspendReason? = null
 
     private val filter = HeartRateFilter()
+
+    private val effort = EffortMonitor()
 
     /** Timestamp of the last sample handed to [filter]; the machine ticks faster than the strap. */
     private var lastFedSampleAtMs: Long? = null
@@ -81,6 +87,7 @@ class ZoneEnforcer(config: EnforcementConfig) {
         completedLatch = false
         armed = false
         filter.reset()
+        effort.reset()
         lastFedSampleAtMs = null
         // The media/curtain latches are deliberately kept: they track what the caller has
         // already applied, and the next tick emits whatever is needed to undo it.
@@ -135,10 +142,10 @@ class ZoneEnforcer(config: EnforcementConfig) {
                 enter(EnforcementState.SUSPENDED, now)
             }
         } else {
-            advance(now, deltaMs, judged!!, bounds!!)
+            advance(now, deltaMs, judged!!, bounds!!, input.powerWatts)
         }
 
-        return snapshot(now, input.bpm, judged, bounds, input.boundaries)
+        return snapshot(now, input.bpm, judged, input.powerWatts, bounds, input.boundaries)
     }
 
     /**
@@ -168,7 +175,13 @@ class ZoneEnforcer(config: EnforcementConfig) {
         else -> null
     }
 
-    private fun advance(now: Long, deltaMs: Long, bpm: Int, bounds: ZoneBounds) {
+    private fun advance(
+        now: Long,
+        deltaMs: Long,
+        bpm: Int,
+        bounds: ZoneBounds,
+        watts: Float?,
+    ) {
         // Staying in the zone uses the raw band; getting back in has to clear the inset.
         // Warm-up is not "getting back in": nothing is escalating, so there is nothing to flap,
         // and demanding overshoot before the session has even started would be gratuitous.
@@ -178,6 +191,10 @@ class ZoneEnforcer(config: EnforcementConfig) {
             state == EnforcementState.WARMUP
         val band = effectiveBand(bounds, config.hysteresisBpm, strict = !lenient)
         val inside = isInBand(bpm, band)
+
+        // Fed before the transitions below, so the trend it reports describes the sample the
+        // machine is about to act on rather than the one before it.
+        effort.onSample(now, bpm, watts, inside, config.smoothingTauMs)
 
         drift = when {
             inside -> null
@@ -272,6 +289,8 @@ class ZoneEnforcer(config: EnforcementConfig) {
 
     private fun canPenalize() = config.penaltyEnabled && !releasedByUser
 
+    private fun quantize(value: Float, step: Float) = (value / step).roundToInt() * step
+
     private fun enter(next: EnforcementState, now: Long) {
         if (next == state) return
         if (state == EnforcementState.PENALTY) holdStartedAtMs = null
@@ -306,6 +325,7 @@ class ZoneEnforcer(config: EnforcementConfig) {
         now: Long,
         bpm: Int?,
         smoothedBpm: Int?,
+        watts: Float?,
         bounds: ZoneBounds?,
         boundaries: List<Int>?,
     ): EnforcementSnapshot {
@@ -332,6 +352,14 @@ class ZoneEnforcer(config: EnforcementConfig) {
         if (state == EnforcementState.COMPLETE && !completedLatch) {
             effects.add(PenaltyEffect.GoalCompleted)
             completedLatch = true
+        }
+
+        // Nothing to judge without a band and a reading. Warm-up is deliberately included:
+        // knowing how sustainable the effort is matters most before anything is enforced.
+        val health = if (bounds != null && smoothedBpm != null) {
+            quantize(effort.health(smoothedBpm, bounds, watts), HealthQuantum)
+        } else {
+            null
         }
 
         val holdRemaining = if (state == EnforcementState.PENALTY) {
@@ -361,6 +389,10 @@ class ZoneEnforcer(config: EnforcementConfig) {
             holdRequiredMs = config.recoveryHoldMs,
             penaltyElapsedMs = penaltyStartedAtMs?.let { now - it } ?: 0L,
             secondsUntilPenalty = secondsUntilPenalty(now),
+            effortHealth = health,
+            headroomSeconds = smoothedBpm?.let { effort.headroomSeconds(it, bounds?.floor) },
+            holdingWatts = effort.holdingWatts,
+            trendBpmPerMin = effort.trendBpmPerMin,
         )
     }
 }
