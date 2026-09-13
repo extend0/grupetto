@@ -52,8 +52,11 @@ class ZoneEnforcerTest {
         hrAgeMs: Long = 0,
         isMoving: Boolean = true,
         watts: Float? = null,
+        settingsVisible: Boolean = false,
     ): EnforcementSnapshot {
-        last = enforcer.tick(TickInput(now, bpm, hrAgeMs, boundaries, isMoving, watts))
+        last = enforcer.tick(
+            TickInput(now, bpm, hrAgeMs, boundaries, isMoving, watts, settingsVisible)
+        )
         seen += last.effects
         return last
     }
@@ -65,12 +68,13 @@ class ZoneEnforcerTest {
         hrAgeMs: Long = 0,
         isMoving: Boolean = true,
         watts: Float? = null,
+        settingsVisible: Boolean = false,
     ): EnforcementSnapshot {
         var remaining = ms
         while (remaining > 0) {
             val step = minOf(1_000L, remaining)
             now += step
-            tick(bpm, hrAgeMs, isMoving, watts)
+            tick(bpm, hrAgeMs, isMoving, watts, settingsVisible)
             remaining -= step
         }
         return last
@@ -749,5 +753,52 @@ class ZoneEnforcerTest {
         // Buffer alone: halfway up the band with nothing known about the bike.
         assertEquals(0.5f, last.effortHealth!!, 0.05f)
         assertNull(last.holdingWatts)
+    }
+
+    // --- staying out of the settings --------------------------------------------------------
+
+    @Test
+    fun `opening the settings takes the curtain down without letting the rider off`() {
+        reachPenalty()
+        assertEquals(1, countOf(PenaltyEffect.ShowCurtain))
+        assertEquals(1, countOf(PenaltyEffect.PauseMedia))
+
+        advance(2_000, 100, settingsVisible = true)
+        assertEquals(1, countOf(PenaltyEffect.HideCurtain))
+        // The penalty itself is untouched: the video stays where it was put, and walking into
+        // the settings is not a way out of it.
+        assertEquals(EnforcementState.PENALTY, last.state)
+        assertEquals(0, countOf(PenaltyEffect.ResumeMedia))
+
+        advance(2_000, 100)
+        assertEquals(2, countOf(PenaltyEffect.ShowCurtain))
+    }
+
+    @Test
+    fun `the warning scrim stays off the settings`() {
+        start()
+        advance(31_000, 100)
+        advance(5_000, 100)
+        assertEquals(EnforcementState.WARNING, last.state)
+        assertTrue(last.scrimAlpha > 0f)
+
+        advance(1_000, 100, settingsVisible = true)
+        assertEquals(0f, last.scrimAlpha, 0f)
+
+        advance(1_000, 100)
+        assertTrue(last.scrimAlpha > 0f)
+    }
+
+    @Test
+    fun `recovering in the settings still hands the media back`() {
+        reachPenalty()
+        advance(2_000, 100, settingsVisible = true)
+        assertEquals(0, countOf(PenaltyEffect.ResumeMedia))
+
+        // Earning it back while the settings happen to be open works exactly as it would
+        // anywhere else - the drawing stood down, the machine did not.
+        advance(6_000, 130, settingsVisible = true)
+        assertEquals(EnforcementState.RECOVERING, last.state)
+        assertEquals(1, countOf(PenaltyEffect.ResumeMedia))
     }
 }

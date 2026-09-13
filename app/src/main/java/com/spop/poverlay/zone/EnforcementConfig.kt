@@ -122,6 +122,13 @@ data class TickInput(
      * than what their heart has caught up to.
      */
     val powerWatts: Float? = null,
+    /**
+     * Whether Grupetto's own settings are on screen.
+     *
+     * Enforcement keeps running - the penalty is not a loophole - but it stops *drawing*, so
+     * the curtain cannot cover the settings someone opened it to change.
+     */
+    val settingsVisible: Boolean = false,
 )
 
 data class EnforcementSnapshot(

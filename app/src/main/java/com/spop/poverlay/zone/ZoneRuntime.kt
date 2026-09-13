@@ -17,4 +17,18 @@ object ZoneRuntime {
     internal fun publish(snapshot: EnforcementSnapshot?) {
         mutableSnapshot.value = snapshot
     }
+
+    /**
+     * Whether Grupetto's own settings are on screen.
+     *
+     * Read from the enforcement tick on another thread, so volatile rather than a flow - the
+     * tick must never wait on the UI.
+     */
+    @Volatile
+    var settingsVisible: Boolean = false
+        private set
+
+    fun setSettingsVisible(visible: Boolean) {
+        settingsVisible = visible
+    }
 }

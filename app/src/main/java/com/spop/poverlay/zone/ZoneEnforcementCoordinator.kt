@@ -140,6 +140,7 @@ class ZoneEnforcementCoordinator(
                     boundaries = HeartRateManager.heartRateZones.value,
                     isMoving = isMovingFlow.value,
                     powerWatts = latestWatts,
+                    settingsVisible = ZoneRuntime.settingsVisible,
                 )
             )
         }

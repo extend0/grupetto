@@ -31,6 +31,7 @@ import com.spop.poverlay.sensor.heartrate.HeartRateManager
 import com.spop.poverlay.media.GrupettoNotificationListenerService
 import com.spop.poverlay.releases.ReleaseChecker
 import com.spop.poverlay.ui.theme.PTONOverlayTheme
+import com.spop.poverlay.zone.ZoneRuntime
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -127,11 +128,16 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        // The penalty curtain draws over every app, this one included. Covering the settings
+        // someone came here to change - very possibly to turn enforcement off - would be
+        // obnoxious, so the overlay stands down while this is on screen.
+        ZoneRuntime.setSettingsVisible(true)
         viewModel.onAppResumed()
     }
 
     override fun onStop() {
         super.onStop()
+        ZoneRuntime.setSettingsVisible(false)
         viewModel.onAppStopped()
     }
 

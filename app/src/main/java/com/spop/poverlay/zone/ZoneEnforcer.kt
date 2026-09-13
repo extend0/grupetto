@@ -60,6 +60,9 @@ class ZoneEnforcer(config: EnforcementConfig) {
     /** Set the first time the rider reaches the zone. See [EnforcementConfig.armOnFirstEntry]. */
     private var armed = false
 
+    /** Grupetto's own settings are on screen, so nothing of ours may be drawn over them. */
+    private var settingsVisible = false
+
     /** Set by the curtain's "End enforcement" button. Survives until [reset]. */
     private var releasedByUser = false
 
@@ -116,6 +119,8 @@ class ZoneEnforcer(config: EnforcementConfig) {
         val now = input.nowMs
         val deltaMs = lastTickMs?.let { (now - it).coerceIn(0L, MaxTickDeltaMs) } ?: 0L
         lastTickMs = now
+
+        settingsVisible = input.settingsVisible
 
         val bounds = zoneBounds(config.targetZone, input.boundaries)
         suspendReason = suspendReasonFor(input, bounds)
@@ -304,6 +309,7 @@ class ZoneEnforcer(config: EnforcementConfig) {
     }
 
     private fun scrimFor(now: Long): Float {
+        if (settingsVisible) return 0f
         if (state != EnforcementState.WARNING) return 0f
         val span = config.warningMs.coerceAtLeast(1)
         val progress = ((now - stateEnteredAtMs).toFloat() / span).coerceIn(0f, 1f)
@@ -337,7 +343,10 @@ class ZoneEnforcer(config: EnforcementConfig) {
             mediaPausedLatch = wantPaused
         }
 
-        val wantCurtain = state == EnforcementState.PENALTY
+        // The media stays exactly where the penalty put it; only the drawing stands down. A
+        // penalty that dissolved on opening the settings would be a loophole, and one that
+        // resumed the video would hand a rider back a programme they are not watching.
+        val wantCurtain = state == EnforcementState.PENALTY && !settingsVisible
         if (wantCurtain != curtainLatch) {
             effects.add(if (wantCurtain) PenaltyEffect.ShowCurtain else PenaltyEffect.HideCurtain)
             curtainLatch = wantCurtain
