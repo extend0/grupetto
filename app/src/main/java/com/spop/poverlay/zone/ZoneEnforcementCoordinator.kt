@@ -28,6 +28,8 @@ class ZoneEnforcementCoordinator(
     private val powerFlow: Flow<Float>,
     private val media: MediaPenaltyController,
     private val persistence: ZonePersistence,
+    /** Optional: without it the curtain simply never stands down for another app. */
+    private val foreground: ForegroundAppMonitor? = null,
     private val onShowCurtain: () -> Unit,
     private val onHideCurtain: () -> Unit,
 ) {
@@ -45,6 +47,9 @@ class ZoneEnforcementCoordinator(
          * behave on a real ride before anything is built on top of it.
          */
         private const val EffortLogIntervalMs = 15_000L
+
+        /** Foreground changes are a human switching apps; once a second is plenty. */
+        private const val ForegroundPollMs = 1_000L
     }
 
     private val enforcer = ZoneEnforcer(EnforcementConfig())
@@ -80,6 +85,21 @@ class ZoneEnforcementCoordinator(
         }
         jobs += scope.launch {
             powerFlow.collect { latestWatts = it }
+        }
+        foreground?.let { monitor ->
+            if (!monitor.hasPermission()) {
+                Timber.w(
+                    "No Usage access grant; the curtain cannot tell what it is covering. " +
+                        "Grant it under Settings > Apps > Special app access > Usage access."
+                )
+            } else {
+                jobs += scope.launch {
+                    while (isActive) {
+                        monitor.refresh()
+                        delay(ForegroundPollMs)
+                    }
+                }
+            }
         }
         // Heart rate arrives at roughly 1 Hz; ticking on arrival keeps recovery snappy.
         jobs += scope.launch {
@@ -140,7 +160,9 @@ class ZoneEnforcementCoordinator(
                     boundaries = HeartRateManager.heartRateZones.value,
                     isMoving = isMovingFlow.value,
                     powerWatts = latestWatts,
-                    settingsVisible = ZoneRuntime.settingsVisible,
+                    // Our own settings report themselves; anything else has to be observed.
+                    overlaySuppressed = ZoneRuntime.settingsVisible ||
+                        foreground?.isLauncherForeground == true,
                 )
             )
         }

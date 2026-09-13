@@ -38,19 +38,23 @@ data class EnforcementConfig(
      */
     val smoothingTauSeconds: Long = 10,
     /**
-     * Hold enforcement in [EnforcementState.WARMUP] until the rider reaches the zone once.
+     * Warm-up: how long the rider must hold their zone, in total, before a penalty becomes
+     * possible at all. 0 enforces from the first sample.
      *
-     * Without it the machine starts judging at the first sample, which on a cold start means a
-     * resting heart rate is already out of band: grace and warning burn while the rider is
-     * simply warming up, and the video pauses within a minute of pressing play. The only way
-     * to beat that clock is to sprint from a standstill - the app would be demanding exactly
-     * the spiky riding it is supposed to smooth out.
+     * Without it the machine starts judging immediately, which on a cold start means a resting
+     * heart rate is already out of band: grace and warning burn while the rider is simply
+     * warming up, and the video pauses within a minute of pressing play. The only way to beat
+     * that clock is to sprint from a standstill - the app would be demanding exactly the spiky
+     * riding it is supposed to smooth out.
+     *
+     * Counted cumulatively rather than as an unbroken streak, so a wobble while settling in
+     * does not send the rider back to the start of their own warm-up.
      *
      * A rider who never reaches their zone is therefore never enforced. That is the right
-     * failure: a zone you have not touched all ride is a zone that was set wrong, and silently
-     * doing nothing beats holding someone's video hostage to a bad number.
+     * failure: a zone untouched all ride is a zone that was set wrong, and silently doing
+     * nothing beats holding someone's video hostage to a bad number.
      */
-    val armOnFirstEntry: Boolean = true,
+    val armAfterZoneSeconds: Long = 60,
     /** No fresh sample for this long means the strap is gone; enforcement suspends. */
     val staleHrMs: Long = 10_000,
     /**
@@ -65,6 +69,7 @@ data class EnforcementConfig(
 ) {
     val goalMs: Long get() = goalSeconds * 1000
     val smoothingTauMs: Long get() = smoothingTauSeconds * 1000
+    val armAfterZoneMs: Long get() = armAfterZoneSeconds * 1000
     val graceMs: Long get() = graceSeconds * 1000
     val warningMs: Long get() = warningSeconds * 1000
     val recoveryHoldMs: Long get() = recoveryHoldSeconds * 1000
@@ -74,8 +79,8 @@ enum class EnforcementState {
     /** Nothing decided yet - before the first usable tick. */
     IDLE,
     /**
-     * Armed but not yet policing: the rider has not reached the zone once this session, so
-     * nothing escalates. See [EnforcementConfig.armOnFirstEntry].
+     * Before the rider has reached their zone at all this session, so nothing escalates.
+     * See [EnforcementConfig.armAfterZoneSeconds].
      */
     WARMUP,
     IN_ZONE,
@@ -123,12 +128,14 @@ data class TickInput(
      */
     val powerWatts: Float? = null,
     /**
-     * Whether Grupetto's own settings are on screen.
+     * Whether the curtain must stay off whatever is on screen - Grupetto's own settings, or a
+     * home screen the rider is picking an app from.
      *
      * Enforcement keeps running - the penalty is not a loophole - but it stops *drawing*, so
-     * the curtain cannot cover the settings someone opened it to change.
+     * it cannot cover the settings someone opened it to change or the launcher they are trying
+     * to use.
      */
-    val settingsVisible: Boolean = false,
+    val overlaySuppressed: Boolean = false,
 )
 
 data class EnforcementSnapshot(

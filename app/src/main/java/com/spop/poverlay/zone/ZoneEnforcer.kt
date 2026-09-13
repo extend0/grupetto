@@ -57,11 +57,11 @@ class ZoneEnforcer(config: EnforcementConfig) {
     /** Timestamp of the last sample handed to [filter]; the machine ticks faster than the strap. */
     private var lastFedSampleAtMs: Long? = null
 
-    /** Set the first time the rider reaches the zone. See [EnforcementConfig.armOnFirstEntry]. */
-    private var armed = false
+    /** Set the first time the rider reaches the zone; only the warm-up state depends on it. */
+    private var hasEnteredZone = false
 
-    /** Grupetto's own settings are on screen, so nothing of ours may be drawn over them. */
-    private var settingsVisible = false
+    /** Something is on screen that nothing of ours may be drawn over. */
+    private var overlaySuppressed = false
 
     /** Set by the curtain's "End enforcement" button. Survives until [reset]. */
     private var releasedByUser = false
@@ -88,7 +88,7 @@ class ZoneEnforcer(config: EnforcementConfig) {
         suspendReason = null
         releasedByUser = false
         completedLatch = false
-        armed = false
+        hasEnteredZone = false
         filter.reset()
         effort.reset()
         lastFedSampleAtMs = null
@@ -99,10 +99,10 @@ class ZoneEnforcer(config: EnforcementConfig) {
     /** Restores credit carried across a process restart. */
     fun restoreCredit(millis: Long) {
         creditMs = millis.coerceAtLeast(0)
-        // Credit is only ever earned in the zone, so a session with any is already warm.
-        // Without this, a crash mid-ride would hand the rider a second warm-up - and with it a
-        // second window in which nothing is enforced.
-        if (creditMs > 0) armed = true
+        // Credit is only ever earned in the zone, so a session with any has already been there.
+        // Without this, a crash mid-ride would drop the rider back into a warm-up they had
+        // finished - and with it a second window in which nothing is enforced.
+        if (creditMs > 0) hasEnteredZone = true
     }
 
     val creditMillis: Long get() = creditMs
@@ -120,7 +120,7 @@ class ZoneEnforcer(config: EnforcementConfig) {
         val deltaMs = lastTickMs?.let { (now - it).coerceIn(0L, MaxTickDeltaMs) } ?: 0L
         lastTickMs = now
 
-        settingsVisible = input.settingsVisible
+        overlaySuppressed = input.overlaySuppressed
 
         val bounds = zoneBounds(config.targetZone, input.boundaries)
         suspendReason = suspendReasonFor(input, bounds)
@@ -196,6 +196,7 @@ class ZoneEnforcer(config: EnforcementConfig) {
             state == EnforcementState.WARMUP
         val band = effectiveBand(bounds, config.hysteresisBpm, strict = !lenient)
         val inside = isInBand(bpm, band)
+        val aboveFloor = band.floor == null || bpm >= band.floor
 
         // Fed before the transitions below, so the trend it reports describes the sample the
         // machine is about to act on rather than the one before it.
@@ -212,15 +213,15 @@ class ZoneEnforcer(config: EnforcementConfig) {
             EnforcementState.SUSPENDED -> enter(
                 when {
                     inside -> EnforcementState.IN_ZONE
-                    config.armOnFirstEntry && !armed -> EnforcementState.WARMUP
+                    config.armAfterZoneSeconds > 0 && !hasEnteredZone -> EnforcementState.WARMUP
                     else -> EnforcementState.GRACE
                 },
                 now,
             )
 
-            // Nothing escalates and nothing accrues until the rider has reached the zone once
-            // under their own steam. This is the whole of the warm-up: no clock runs against
-            // someone who has not started yet.
+            // Nothing escalates and nothing accrues before the rider has reached the zone at
+            // all. Getting there does not finish the warm-up - holding it does, which
+            // [canPenalize] decides - but it does start the credit running.
             EnforcementState.WARMUP -> if (inside) enter(EnforcementState.IN_ZONE, now)
 
             EnforcementState.IN_ZONE -> {
@@ -267,8 +268,13 @@ class ZoneEnforcer(config: EnforcementConfig) {
                         now,
                     )
 
-                    inside -> {
-                        // The clock starts at the first in-band sample, not at the sample
+                    // Not `inside`: a penalty is only ever handed out for falling *below* the
+                    // zone, so a rider who has sprinted clear above it has already done more
+                    // than was asked. Making them come back down into a narrow band to get
+                    // their video back is what makes the screen feel stuck - and someone who
+                    // spikes to get out of trouble is exactly who ends up above it.
+                    aboveFloor -> {
+                        // The clock starts at the first recovered sample, not at the one
                         // before it - so the hold is a full recoveryHoldMs of observed effort.
                         val holdSince = holdStartedAtMs ?: now.also { holdStartedAtMs = it }
                         if (now - holdSince >= config.recoveryHoldMs) {
@@ -277,7 +283,7 @@ class ZoneEnforcer(config: EnforcementConfig) {
                         }
                     }
 
-                    // Any single sample outside the band restarts the whole hold.
+                    // Any single sample back below the floor restarts the whole hold.
                     else -> holdStartedAtMs = null
                 }
             }
@@ -292,7 +298,13 @@ class ZoneEnforcer(config: EnforcementConfig) {
         if (state == EnforcementState.WARMUP) drift = null
     }
 
-    private fun canPenalize() = config.penaltyEnabled && !releasedByUser
+    /**
+     * Credit is time held in the zone, so it doubles as the warm-up clock: until the rider has
+     * put [EnforcementConfig.armAfterZoneSeconds] of it together, nothing can pause their video.
+     */
+    private fun isArmed() = creditMs >= config.armAfterZoneMs
+
+    private fun canPenalize() = config.penaltyEnabled && !releasedByUser && isArmed()
 
     private fun quantize(value: Float, step: Float) = (value / step).roundToInt() * step
 
@@ -301,15 +313,15 @@ class ZoneEnforcer(config: EnforcementConfig) {
         if (state == EnforcementState.PENALTY) holdStartedAtMs = null
         if (next == EnforcementState.PENALTY) penaltyStartedAtMs = now
         if (next != EnforcementState.PENALTY) penaltyStartedAtMs = null
-        // Reaching the zone once is what arms enforcement, and it stays armed for the rest of
-        // the session: losing the strap or easing off later must not hand back a fresh warm-up.
-        if (next == EnforcementState.IN_ZONE) armed = true
+        // Reaching the zone ends the warm-up *state* for the rest of the session: losing the
+        // strap or easing off later must not put the rider back in front of it.
+        if (next == EnforcementState.IN_ZONE) hasEnteredZone = true
         state = next
         stateEnteredAtMs = now
     }
 
     private fun scrimFor(now: Long): Float {
-        if (settingsVisible) return 0f
+        if (overlaySuppressed) return 0f
         if (state != EnforcementState.WARNING) return 0f
         val span = config.warningMs.coerceAtLeast(1)
         val progress = ((now - stateEnteredAtMs).toFloat() / span).coerceIn(0f, 1f)
@@ -344,9 +356,9 @@ class ZoneEnforcer(config: EnforcementConfig) {
         }
 
         // The media stays exactly where the penalty put it; only the drawing stands down. A
-        // penalty that dissolved on opening the settings would be a loophole, and one that
+        // penalty that dissolved on reaching the home screen would be a loophole, and one that
         // resumed the video would hand a rider back a programme they are not watching.
-        val wantCurtain = state == EnforcementState.PENALTY && !settingsVisible
+        val wantCurtain = state == EnforcementState.PENALTY && !overlaySuppressed
         if (wantCurtain != curtainLatch) {
             effects.add(if (wantCurtain) PenaltyEffect.ShowCurtain else PenaltyEffect.HideCurtain)
             curtainLatch = wantCurtain

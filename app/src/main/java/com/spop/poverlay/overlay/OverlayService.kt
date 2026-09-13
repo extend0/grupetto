@@ -43,6 +43,7 @@ import com.spop.poverlay.R
 import com.spop.poverlay.media.MediaPenaltyController
 import com.spop.poverlay.overlay.penalty.PenaltyCurtain
 import com.spop.poverlay.sensor.heartrate.HeartRateManager
+import com.spop.poverlay.zone.ForegroundAppMonitor
 import com.spop.poverlay.zone.ZoneEnforcementCoordinator
 import com.spop.poverlay.zone.ZonePersistence
 import com.spop.poverlay.zone.ZoneRuntime
@@ -258,6 +259,7 @@ class OverlayService : LifecycleEnabledService() {
             powerFlow = sensorInterface.power,
             media = MediaPenaltyController(applicationContext),
             persistence = ZonePersistence(applicationContext),
+            foreground = ForegroundAppMonitor(applicationContext),
             onShowCurtain = ::showPenaltyCurtain,
             onHideCurtain = ::hidePenaltyCurtain,
         )
@@ -659,13 +661,29 @@ class OverlayService : LifecycleEnabledService() {
             .onFailure { Timber.e(it, "Failed to show penalty curtain") }
     }
 
+    /**
+     * Takes the curtain down.
+     *
+     * Deliberately [WindowManager.removeView] and not `removeViewImmediate`. This runs while
+     * the rider's finger is on the Release button, and an immediate removal detaches the view
+     * synchronously inside touch dispatch - which makes Compose cancel a pointer stream it is
+     * in the middle of resuming, throw, and unwind with the curtain still on screen and its
+     * reference already dropped. The result is a penalty screen that can never be removed
+     * again. Deferring the detach by one message avoids the whole thing.
+     */
     private fun hidePenaltyCurtain() {
         val view = curtainView ?: return
         curtainView = null
-        windowManager?.let { wm ->
-            runCatching { wm.removeViewImmediate(view) }
-                .onFailure { Timber.w(it, "Failed to remove penalty curtain") }
-        }
+        val wm = windowManager ?: return
+        runCatching { wm.removeView(view) }
+            .onFailure { first ->
+                // Never leave a curtain on screen with nothing holding a reference to it.
+                Timber.w(first, "Failed to remove penalty curtain; retrying off the dispatch")
+                view.post {
+                    runCatching { wm.removeView(view) }
+                        .onFailure { Timber.e(it, "Penalty curtain could not be removed") }
+                }
+            }
     }
 
     private fun removeOverlayViews() {

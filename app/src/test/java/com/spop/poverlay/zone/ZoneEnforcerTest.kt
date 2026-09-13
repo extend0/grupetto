@@ -2,6 +2,7 @@ package com.spop.poverlay.zone
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -28,12 +29,16 @@ class ZoneEnforcerTest {
         recoveryHoldSeconds = 5,
         hysteresisBpm = 4,
         smoothingTauSeconds = 0,
+        armAfterZoneSeconds = 0,
         staleHrMs = 10_000,
         suspendWhenStopped = false,
     )
 
     /** Conditioning on, at the shipped time constant. */
     private val smoothed = baseConfig.copy(smoothingTauSeconds = 10)
+
+    /** Warm-up on: a minute of held zone before anything can pause a video. */
+    private val warmUp = baseConfig.copy(armAfterZoneSeconds = 60)
 
     private lateinit var enforcer: ZoneEnforcer
     private var now = 0L
@@ -52,10 +57,10 @@ class ZoneEnforcerTest {
         hrAgeMs: Long = 0,
         isMoving: Boolean = true,
         watts: Float? = null,
-        settingsVisible: Boolean = false,
+        overlaySuppressed: Boolean = false,
     ): EnforcementSnapshot {
         last = enforcer.tick(
-            TickInput(now, bpm, hrAgeMs, boundaries, isMoving, watts, settingsVisible)
+            TickInput(now, bpm, hrAgeMs, boundaries, isMoving, watts, overlaySuppressed)
         )
         seen += last.effects
         return last
@@ -68,13 +73,13 @@ class ZoneEnforcerTest {
         hrAgeMs: Long = 0,
         isMoving: Boolean = true,
         watts: Float? = null,
-        settingsVisible: Boolean = false,
+        overlaySuppressed: Boolean = false,
     ): EnforcementSnapshot {
         var remaining = ms
         while (remaining > 0) {
             val step = minOf(1_000L, remaining)
             now += step
-            tick(bpm, hrAgeMs, isMoving, watts, settingsVisible)
+            tick(bpm, hrAgeMs, isMoving, watts, overlaySuppressed)
             remaining -= step
         }
         return last
@@ -84,7 +89,7 @@ class ZoneEnforcerTest {
      * Starts where a real ride starts - off the pace - instead of with [start]'s in-zone tick.
      */
     private fun startCold(
-        config: EnforcementConfig = baseConfig,
+        config: EnforcementConfig = warmUp,
         bpm: Int = 70,
     ): EnforcementSnapshot {
         enforcer = ZoneEnforcer(config)
@@ -574,7 +579,7 @@ class ZoneEnforcerTest {
     }
 
     @Test
-    fun `reaching the zone once ends the warm-up for good`() {
+    fun `reaching the zone leaves warm-up but does not yet arm a penalty`() {
         startCold()
         advance(60_000, 90)
         assertEquals(EnforcementState.WARMUP, last.state)
@@ -582,12 +587,41 @@ class ZoneEnforcerTest {
         advance(5_000, 130)
         assertEquals(EnforcementState.IN_ZONE, last.state)
 
-        // And from here the machine is fully live: the same drop that was ignored during
-        // warm-up now runs the whole escalation.
+        // Five seconds of held zone is not a warm-up. The escalation runs, but it has no
+        // teeth: there is nothing to count down to and the video is never touched.
+        advance(31_000, 100)
+        advance(30_000, 100)
+        assertEquals(EnforcementState.WARNING, last.state)
+        assertNull(last.secondsUntilPenalty)
+        assertEquals(0, countOf(PenaltyEffect.PauseMedia))
+    }
+
+    @Test
+    fun `holding the zone for long enough arms the penalty`() {
+        startCold()
+        advance(30_000, 90)
+        // A full minute of the zone, which is what the warm-up asks for.
+        advance(62_000, 130)
+        assertEquals(EnforcementState.IN_ZONE, last.state)
+
         advance(31_000, 100)
         assertEquals(EnforcementState.WARNING, last.state)
+        assertNotNull(last.secondsUntilPenalty)
         advance(16_000, 100)
         assertEquals(EnforcementState.PENALTY, last.state)
+    }
+
+    @Test
+    fun `a wobble while settling in does not restart the warm-up`() {
+        startCold()
+        advance(40_000, 130)
+        // Out for a moment, then back. The warm-up counts total time in the zone, not an
+        // unbroken streak, so this costs a few seconds rather than the whole minute.
+        advance(5_000, 100)
+        advance(25_000, 130)
+
+        advance(31_000, 100)
+        assertNotNull(last.secondsUntilPenalty)
     }
 
     @Test
@@ -617,7 +651,7 @@ class ZoneEnforcerTest {
 
     @Test
     fun `restored credit skips the warm-up`() {
-        enforcer = ZoneEnforcer(baseConfig)
+        enforcer = ZoneEnforcer(warmUp)
         enforcer.restoreCredit(600_000)
         now = 0
         seen.clear()
@@ -627,8 +661,8 @@ class ZoneEnforcerTest {
     }
 
     @Test
-    fun `arming on first entry can be switched off`() {
-        startCold(baseConfig.copy(armOnFirstEntry = false))
+    fun `the warm-up can be switched off`() {
+        startCold(baseConfig)
         assertEquals(EnforcementState.GRACE, last.state)
         advance(31_000, 90)
         advance(16_000, 90)
@@ -758,12 +792,12 @@ class ZoneEnforcerTest {
     // --- staying out of the settings --------------------------------------------------------
 
     @Test
-    fun `opening the settings takes the curtain down without letting the rider off`() {
+    fun `covering the settings takes the curtain down without letting the rider off`() {
         reachPenalty()
         assertEquals(1, countOf(PenaltyEffect.ShowCurtain))
         assertEquals(1, countOf(PenaltyEffect.PauseMedia))
 
-        advance(2_000, 100, settingsVisible = true)
+        advance(2_000, 100, overlaySuppressed = true)
         assertEquals(1, countOf(PenaltyEffect.HideCurtain))
         // The penalty itself is untouched: the video stays where it was put, and walking into
         // the settings is not a way out of it.
@@ -782,7 +816,7 @@ class ZoneEnforcerTest {
         assertEquals(EnforcementState.WARNING, last.state)
         assertTrue(last.scrimAlpha > 0f)
 
-        advance(1_000, 100, settingsVisible = true)
+        advance(1_000, 100, overlaySuppressed = true)
         assertEquals(0f, last.scrimAlpha, 0f)
 
         advance(1_000, 100)
@@ -792,13 +826,47 @@ class ZoneEnforcerTest {
     @Test
     fun `recovering in the settings still hands the media back`() {
         reachPenalty()
-        advance(2_000, 100, settingsVisible = true)
+        advance(2_000, 100, overlaySuppressed = true)
         assertEquals(0, countOf(PenaltyEffect.ResumeMedia))
 
         // Earning it back while the settings happen to be open works exactly as it would
         // anywhere else - the drawing stood down, the machine did not.
-        advance(6_000, 130, settingsVisible = true)
+        advance(6_000, 130, overlaySuppressed = true)
         assertEquals(EnforcementState.RECOVERING, last.state)
         assertEquals(1, countOf(PenaltyEffect.ResumeMedia))
+    }
+
+    // --- recovering from a penalty ----------------------------------------------------------
+
+    @Test
+    fun `sprinting clear above the zone clears a penalty`() {
+        reachPenalty()
+        // 150 is over the top of zone 2 entirely. A rider who overshoots getting out of
+        // trouble has done more than was asked, not less - the video has to come back.
+        advance(6_000, 150)
+        assertEquals(EnforcementState.RECOVERING, last.state)
+        assertEquals(1, countOf(PenaltyEffect.ResumeMedia))
+        assertEquals(1, countOf(PenaltyEffect.HideCurtain))
+    }
+
+    @Test
+    fun `a penalty still holds while the rider is below the floor`() {
+        reachPenalty()
+        advance(60_000, 100)
+        assertEquals(EnforcementState.PENALTY, last.state)
+        assertEquals(0, countOf(PenaltyEffect.ResumeMedia))
+    }
+
+    @Test
+    fun `falling back below the floor restarts the recovery hold`() {
+        reachPenalty()
+        advance(3_000, 150)
+        assertEquals(EnforcementState.PENALTY, last.state)
+        // Back under, so the hold starts again from nothing.
+        advance(1_000, 100)
+        advance(3_000, 150)
+        assertEquals(EnforcementState.PENALTY, last.state)
+        advance(3_000, 150)
+        assertEquals(EnforcementState.RECOVERING, last.state)
     }
 }

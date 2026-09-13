@@ -4,6 +4,14 @@
 
     <uses-permission android:name="onepeloton.permission.ACCESS_SENSOR_SERVICE" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <!--
+      Lets the overlay find out what is on screen underneath it, so the penalty curtain can
+      stay off the home screen and app drawer. Granted by hand under Usage access; without it
+      the curtain simply behaves as it always did.
+    -->
+    <uses-permission
+        android:name="android.permission.PACKAGE_USAGE_STATS"
+        tools:ignore="ProtectedPermissions" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
