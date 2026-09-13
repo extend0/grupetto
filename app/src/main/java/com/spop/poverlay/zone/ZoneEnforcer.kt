@@ -46,6 +46,14 @@ class ZoneEnforcer(config: EnforcementConfig) {
     private var drift: Drift? = null
     private var suspendReason: SuspendReason? = null
 
+    private val filter = HeartRateFilter()
+
+    /** Timestamp of the last sample handed to [filter]; the machine ticks faster than the strap. */
+    private var lastFedSampleAtMs: Long? = null
+
+    /** Set the first time the rider reaches the zone. See [EnforcementConfig.armOnFirstEntry]. */
+    private var armed = false
+
     /** Set by the curtain's "End enforcement" button. Survives until [reset]. */
     private var releasedByUser = false
 
@@ -71,6 +79,9 @@ class ZoneEnforcer(config: EnforcementConfig) {
         suspendReason = null
         releasedByUser = false
         completedLatch = false
+        armed = false
+        filter.reset()
+        lastFedSampleAtMs = null
         // The media/curtain latches are deliberately kept: they track what the caller has
         // already applied, and the next tick emits whatever is needed to undo it.
     }
@@ -78,6 +89,10 @@ class ZoneEnforcer(config: EnforcementConfig) {
     /** Restores credit carried across a process restart. */
     fun restoreCredit(millis: Long) {
         creditMs = millis.coerceAtLeast(0)
+        // Credit is only ever earned in the zone, so a session with any is already warm.
+        // Without this, a crash mid-ride would hand the rider a second warm-up - and with it a
+        // second window in which nothing is enforced.
+        if (creditMs > 0) armed = true
     }
 
     val creditMillis: Long get() = creditMs
@@ -98,6 +113,17 @@ class ZoneEnforcer(config: EnforcementConfig) {
         val bounds = zoneBounds(config.targetZone, input.boundaries)
         suspendReason = suspendReasonFor(input, bounds)
 
+        val judged = if (suspendReason == null) {
+            conditioned(input)
+        } else {
+            // The signal is gone, or nobody is asking. Keep no history: a strap that returns
+            // after a gap should be read fresh, not blended with whatever it said before it
+            // fell off.
+            filter.reset()
+            lastFedSampleAtMs = null
+            null
+        }
+
         if (suspendReason != null) {
             // A live penalty outlives the loss of the signal. No heart rate usually means the
             // strap came off with the rider, so the video should stay put; only the feature
@@ -109,10 +135,28 @@ class ZoneEnforcer(config: EnforcementConfig) {
                 enter(EnforcementState.SUSPENDED, now)
             }
         } else {
-            advance(now, deltaMs, input.bpm!!, bounds!!)
+            advance(now, deltaMs, judged!!, bounds!!)
         }
 
-        return snapshot(now, input.bpm, bounds, input.boundaries)
+        return snapshot(now, input.bpm, judged, bounds, input.boundaries)
+    }
+
+    /**
+     * Runs the strap signal through [filter], feeding it only samples it has not seen before.
+     *
+     * The machine ticks several times a second while the strap reports about once a second, so
+     * most ticks carry a repeat of the last sample. Feeding those would drag the average toward
+     * a value the heart never actually held, and would let one reading outvote the median by
+     * sheer repetition.
+     */
+    private fun conditioned(input: TickInput): Int {
+        val sampleAtMs = input.nowMs - input.hrAgeMs
+        val alreadyFed = lastFedSampleAtMs
+        if (alreadyFed == null || sampleAtMs > alreadyFed) {
+            lastFedSampleAtMs = sampleAtMs
+            return filter.accept(input.bpm!!, sampleAtMs, config.smoothingTauMs)
+        }
+        return filter.value ?: input.bpm!!
     }
 
     private fun suspendReasonFor(input: TickInput, bounds: ZoneBounds?): SuspendReason? = when {
@@ -126,10 +170,13 @@ class ZoneEnforcer(config: EnforcementConfig) {
 
     private fun advance(now: Long, deltaMs: Long, bpm: Int, bounds: ZoneBounds) {
         // Staying in the zone uses the raw band; getting back in has to clear the inset.
-        val wasInside = state == EnforcementState.IN_ZONE ||
+        // Warm-up is not "getting back in": nothing is escalating, so there is nothing to flap,
+        // and demanding overshoot before the session has even started would be gratuitous.
+        val lenient = state == EnforcementState.IN_ZONE ||
             state == EnforcementState.RECOVERING ||
-            state == EnforcementState.COMPLETE
-        val band = effectiveBand(bounds, config.hysteresisBpm, strict = !wasInside)
+            state == EnforcementState.COMPLETE ||
+            state == EnforcementState.WARMUP
+        val band = effectiveBand(bounds, config.hysteresisBpm, strict = !lenient)
         val inside = isInBand(bpm, band)
 
         drift = when {
@@ -140,8 +187,19 @@ class ZoneEnforcer(config: EnforcementConfig) {
 
         when (state) {
             EnforcementState.IDLE,
-            EnforcementState.SUSPENDED ->
-                enter(if (inside) EnforcementState.IN_ZONE else EnforcementState.GRACE, now)
+            EnforcementState.SUSPENDED -> enter(
+                when {
+                    inside -> EnforcementState.IN_ZONE
+                    config.armOnFirstEntry && !armed -> EnforcementState.WARMUP
+                    else -> EnforcementState.GRACE
+                },
+                now,
+            )
+
+            // Nothing escalates and nothing accrues until the rider has reached the zone once
+            // under their own steam. This is the whole of the warm-up: no clock runs against
+            // someone who has not started yet.
+            EnforcementState.WARMUP -> if (inside) enter(EnforcementState.IN_ZONE, now)
 
             EnforcementState.IN_ZONE -> {
                 // Credit the elapsed interval only if this sample is still in the band -
@@ -205,6 +263,11 @@ class ZoneEnforcer(config: EnforcementConfig) {
             // Terminal. Someone who hit their goal must never be penalized for cooling down.
             EnforcementState.COMPLETE -> if (inside) creditMs += deltaMs
         }
+
+        // Warm-up has nothing to drift *from*. Painting the strip as a drop-out before the
+        // rider has ever been in the zone is noise, so it is cleared here - after the
+        // transitions, which covers both entering warm-up and sitting in it.
+        if (state == EnforcementState.WARMUP) drift = null
     }
 
     private fun canPenalize() = config.penaltyEnabled && !releasedByUser
@@ -214,6 +277,9 @@ class ZoneEnforcer(config: EnforcementConfig) {
         if (state == EnforcementState.PENALTY) holdStartedAtMs = null
         if (next == EnforcementState.PENALTY) penaltyStartedAtMs = now
         if (next != EnforcementState.PENALTY) penaltyStartedAtMs = null
+        // Reaching the zone once is what arms enforcement, and it stays armed for the rest of
+        // the session: losing the strap or easing off later must not hand back a fresh warm-up.
+        if (next == EnforcementState.IN_ZONE) armed = true
         state = next
         stateEnteredAtMs = now
     }
@@ -239,6 +305,7 @@ class ZoneEnforcer(config: EnforcementConfig) {
     private fun snapshot(
         now: Long,
         bpm: Int?,
+        smoothedBpm: Int?,
         bounds: ZoneBounds?,
         boundaries: List<Int>?,
     ): EnforcementSnapshot {
@@ -284,7 +351,10 @@ class ZoneEnforcer(config: EnforcementConfig) {
             targetZone = config.targetZone,
             band = bounds,
             bpm = bpm,
-            currentZone = bpm?.let { zoneFor(it, boundaries) },
+            smoothedBpm = smoothedBpm,
+            // Reported off the conditioned value, so the zone shown never disagrees with the
+            // zone the machine is acting on.
+            currentZone = smoothedBpm?.let { zoneFor(it, boundaries) },
             drift = drift,
             scrimAlpha = scrimLatch,
             holdRemainingMs = holdRemaining,

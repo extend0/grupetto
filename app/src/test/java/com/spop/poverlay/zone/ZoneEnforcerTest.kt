@@ -9,6 +9,10 @@ import org.junit.Test
 /**
  * The machine is pure, so these drive it with a fake clock and assert on states and effects.
  * Zone 2 is [120, 140) throughout; with a 4 bpm hysteresis, re-entry needs 124..135.
+ *
+ * Signal conditioning is off in [baseConfig] so that a bpm handed to a tick is the bpm the
+ * machine judges. That keeps these tests about state transitions; the filter has its own tests,
+ * and the handful of cases below that care about the two together switch it on explicitly.
  */
 class ZoneEnforcerTest {
 
@@ -23,9 +27,13 @@ class ZoneEnforcerTest {
         warningSeconds = 15,
         recoveryHoldSeconds = 5,
         hysteresisBpm = 4,
+        smoothingTauSeconds = 0,
         staleHrMs = 10_000,
         suspendWhenStopped = false,
     )
+
+    /** Conditioning on, at the shipped time constant. */
+    private val smoothed = baseConfig.copy(smoothingTauSeconds = 10)
 
     private lateinit var enforcer: ZoneEnforcer
     private var now = 0L
@@ -64,6 +72,19 @@ class ZoneEnforcerTest {
             remaining -= step
         }
         return last
+    }
+
+    /**
+     * Starts where a real ride starts - off the pace - instead of with [start]'s in-zone tick.
+     */
+    private fun startCold(
+        config: EnforcementConfig = baseConfig,
+        bpm: Int = 70,
+    ): EnforcementSnapshot {
+        enforcer = ZoneEnforcer(config)
+        now = 0L
+        seen.clear()
+        return tick(bpm)
     }
 
     private fun countOf(effect: PenaltyEffect) = seen.count { it == effect }
@@ -520,5 +541,166 @@ class ZoneEnforcerTest {
 
         advance(1_000, 170)
         assertEquals(4, last.currentZone)
+    }
+
+    // --- warm-up ----------------------------------------------------------------------------
+
+    @Test
+    fun `a cold start warms up instead of escalating`() {
+        startCold()
+        assertEquals(EnforcementState.WARMUP, last.state)
+
+        // Ten minutes of honest warming up. Nothing counts against a rider who has not yet
+        // been given the chance to reach their zone.
+        advance(600_000, 90)
+        assertEquals(EnforcementState.WARMUP, last.state)
+        assertEquals(0, countOf(PenaltyEffect.PauseMedia))
+        assertEquals(0, last.creditSeconds)
+        assertNull(last.secondsUntilPenalty)
+    }
+
+    @Test
+    fun `warm-up shows no drift and no scrim`() {
+        startCold()
+        advance(120_000, 90)
+        assertNull(last.drift)
+        assertEquals(0f, last.scrimAlpha, 0f)
+    }
+
+    @Test
+    fun `reaching the zone once ends the warm-up for good`() {
+        startCold()
+        advance(60_000, 90)
+        assertEquals(EnforcementState.WARMUP, last.state)
+
+        advance(5_000, 130)
+        assertEquals(EnforcementState.IN_ZONE, last.state)
+
+        // And from here the machine is fully live: the same drop that was ignored during
+        // warm-up now runs the whole escalation.
+        advance(31_000, 100)
+        assertEquals(EnforcementState.WARNING, last.state)
+        advance(16_000, 100)
+        assertEquals(EnforcementState.PENALTY, last.state)
+    }
+
+    @Test
+    fun `warm-up entry does not demand the re-entry overshoot`() {
+        // 120 is the floor exactly. Someone who has never been in the zone should be let in on
+        // touching it, not made to clear the anti-flap inset first.
+        startCold()
+        advance(30_000, 90)
+        advance(1_000, 120)
+        assertEquals(EnforcementState.IN_ZONE, last.state)
+    }
+
+    @Test
+    fun `losing the strap after warm-up does not hand back another one`() {
+        startCold()
+        advance(30_000, 90)
+        advance(5_000, 130)
+        assertEquals(EnforcementState.IN_ZONE, last.state)
+
+        advance(15_000, null)
+        assertEquals(EnforcementState.SUSPENDED, last.state)
+
+        // Back on the bike, off the pace. Enforcement resumes where it left off.
+        advance(1_000, 100)
+        assertEquals(EnforcementState.GRACE, last.state)
+    }
+
+    @Test
+    fun `restored credit skips the warm-up`() {
+        enforcer = ZoneEnforcer(baseConfig)
+        enforcer.restoreCredit(600_000)
+        now = 0
+        seen.clear()
+        // A rider mid-ride whose process died. They are warm; do not give them a free window.
+        tick(90)
+        assertEquals(EnforcementState.GRACE, last.state)
+    }
+
+    @Test
+    fun `arming on first entry can be switched off`() {
+        startCold(baseConfig.copy(armOnFirstEntry = false))
+        assertEquals(EnforcementState.GRACE, last.state)
+        advance(31_000, 90)
+        advance(16_000, 90)
+        assertEquals(EnforcementState.PENALTY, last.state)
+    }
+
+    @Test
+    fun `a reset returns the rider to warm-up`() {
+        startCold()
+        advance(30_000, 90)
+        advance(5_000, 130)
+        enforcer.reset()
+        now += 1_000
+        tick(90)
+        assertEquals(EnforcementState.WARMUP, last.state)
+    }
+
+    // --- signal conditioning ----------------------------------------------------------------
+
+    @Test
+    fun `a single artifact sample cannot start the escalation`() {
+        start(smoothed)
+        advance(5_000, 130)
+
+        now += 1_000
+        tick(40)
+        assertEquals(EnforcementState.IN_ZONE, last.state)
+        assertNull(last.drift)
+    }
+
+    @Test
+    fun `a sustained drop still escalates, just later`() {
+        start(smoothed)
+        advance(5_000, 130)
+
+        // The raw signal is below the floor from the first of these ticks; the conditioned one
+        // takes a few seconds to follow, which is the lag being paid for.
+        advance(3_000, 100)
+        assertEquals(EnforcementState.IN_ZONE, last.state)
+
+        advance(60_000, 100)
+        assertEquals(EnforcementState.PENALTY, last.state)
+    }
+
+    @Test
+    fun `the snapshot reports the raw reading and the judged one separately`() {
+        start(smoothed)
+        advance(5_000, 130)
+        advance(2_000, 150)
+
+        assertEquals(150, last.bpm)
+        val judged = last.smoothedBpm!!
+        assertTrue("was $judged", judged in 131..145)
+    }
+
+    @Test
+    fun `conditioning off leaves the judged value equal to the raw one`() {
+        start()
+        advance(5_000, 133)
+        assertEquals(133, last.bpm)
+        assertEquals(133, last.smoothedBpm)
+    }
+
+    @Test
+    fun `repeated ticks between samples do not drag the average`() {
+        start(smoothed)
+        advance(5_000, 130)
+
+        // One sample, then four ticks that carry the same ageing reading. Feeding those would
+        // pull the average toward a value the heart never held.
+        now += 1_000
+        tick(150, hrAgeMs = 0)
+        val sampleAt = now
+        val afterSample = last.smoothedBpm
+        repeat(4) {
+            now += 250
+            tick(150, hrAgeMs = now - sampleAt)
+        }
+        assertEquals(afterSample, last.smoothedBpm)
     }
 }

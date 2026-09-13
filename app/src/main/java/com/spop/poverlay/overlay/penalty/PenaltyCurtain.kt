@@ -87,7 +87,10 @@ fun PenaltyCurtain(
                 }
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
-                        text = snapshot.bpm?.toString() ?: "--",
+                        // The conditioned value, not the raw one: this is the number that has
+                        // to cross the line to release the video, and showing a raw reading
+                        // flickering over the band while nothing happens reads as a broken app.
+                        text = snapshot.smoothedBpm?.toString() ?: "--",
                         color = zoneColor(snapshot.currentZone),
                         fontSize = 76.sp,
                         fontWeight = FontWeight.Bold,

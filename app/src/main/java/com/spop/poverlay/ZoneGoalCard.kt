@@ -340,6 +340,10 @@ private fun NumberField(
  * "suspended" on its own tells the rider nothing actionable - the reason is what they can act on.
  */
 private fun statusLabel(snapshot: EnforcementSnapshot): String {
+    // Say what ends the warm-up, not that one is happening - the rider needs the exit condition.
+    if (snapshot.state == EnforcementState.WARMUP) {
+        return "warming up - starts when you reach Zone ${snapshot.targetZone}"
+    }
     if (snapshot.state != EnforcementState.SUSPENDED) {
         return snapshot.state.name.lowercase().replace('_', ' ')
     }

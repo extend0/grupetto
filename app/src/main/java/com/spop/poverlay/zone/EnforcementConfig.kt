@@ -20,8 +20,37 @@ data class EnforcementConfig(
     val graceSeconds: Long = 30,
     val warningSeconds: Long = 15,
     val recoveryHoldSeconds: Long = 5,
-    /** Re-entry inset. Without it, a bpm sitting on the boundary flaps and the video strobes. */
-    val hysteresisBpm: Int = 4,
+    /**
+     * Re-entry inset: how far *past* the boundary the rider has to climb to be counted back in.
+     *
+     * It exists to stop a bpm sitting on the boundary from flapping. Smoothing now absorbs most
+     * of that wobble ([smoothingTauSeconds]), so this is deliberately small - every bpm here is
+     * a bpm of overshoot demanded of someone who has just been told to work harder, and a wide
+     * inset is what turns getting back into the zone into a sprint.
+     */
+    val hysteresisBpm: Int = 2,
+    /**
+     * Time constant of the smoothing applied to the strap signal before the machine judges it.
+     *
+     * Roughly the lag it adds, so it is a direct tax on how fast a real drop-out is noticed.
+     * Ten seconds is enough to kill the wobble and stays far inside [graceSeconds]. Zero feeds
+     * raw samples straight through, which is what the state-machine tests want.
+     */
+    val smoothingTauSeconds: Long = 10,
+    /**
+     * Hold enforcement in [EnforcementState.WARMUP] until the rider reaches the zone once.
+     *
+     * Without it the machine starts judging at the first sample, which on a cold start means a
+     * resting heart rate is already out of band: grace and warning burn while the rider is
+     * simply warming up, and the video pauses within a minute of pressing play. The only way
+     * to beat that clock is to sprint from a standstill - the app would be demanding exactly
+     * the spiky riding it is supposed to smooth out.
+     *
+     * A rider who never reaches their zone is therefore never enforced. That is the right
+     * failure: a zone you have not touched all ride is a zone that was set wrong, and silently
+     * doing nothing beats holding someone's video hostage to a bad number.
+     */
+    val armOnFirstEntry: Boolean = true,
     /** No fresh sample for this long means the strap is gone; enforcement suspends. */
     val staleHrMs: Long = 10_000,
     /**
@@ -35,6 +64,7 @@ data class EnforcementConfig(
     val suspendWhenStopped: Boolean = false,
 ) {
     val goalMs: Long get() = goalSeconds * 1000
+    val smoothingTauMs: Long get() = smoothingTauSeconds * 1000
     val graceMs: Long get() = graceSeconds * 1000
     val warningMs: Long get() = warningSeconds * 1000
     val recoveryHoldMs: Long get() = recoveryHoldSeconds * 1000
@@ -43,6 +73,11 @@ data class EnforcementConfig(
 enum class EnforcementState {
     /** Nothing decided yet - before the first usable tick. */
     IDLE,
+    /**
+     * Armed but not yet policing: the rider has not reached the zone once this session, so
+     * nothing escalates. See [EnforcementConfig.armOnFirstEntry].
+     */
+    WARMUP,
     IN_ZONE,
     /** Out of band, still inside the grace window. No penalty, no credit. */
     GRACE,
@@ -91,7 +126,15 @@ data class EnforcementSnapshot(
     val goalSeconds: Long,
     val targetZone: Int,
     val band: ZoneBounds?,
+    /** Raw, as the strap reported it. What the rider sees on the strip. */
     val bpm: Int?,
+    /**
+     * What the machine actually judged, after conditioning. Equal to [bpm] with smoothing off.
+     *
+     * Worth showing wherever the rider is waiting on a threshold - during a penalty especially,
+     * where a raw number flickering over the line while nothing happens reads as a broken app.
+     */
+    val smoothedBpm: Int?,
     val currentZone: Int?,
     val drift: Drift?,
     val scrimAlpha: Float,
