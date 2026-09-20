@@ -140,20 +140,36 @@ class ZoneEnforcer(config: EnforcementConfig) {
             null
         }
 
-        if (suspendReason != null) {
+        // Completion and explicit release must not depend on a working strap.
+        if (config.enabled && bounds != null && creditMs >= config.goalMs) {
+            drift = null
+            enter(EnforcementState.COMPLETE, now)
+            if (suspendReason == null) advance(now, deltaMs, judged!!, bounds)
+            else if ((suspendReason == SuspendReason.NO_SIGNAL || suspendReason == SuspendReason.STALE) &&
+                effort.vouchesForEffort()
+            ) advanceBlind(now, deltaMs)
+        } else if (suspendReason != null) {
             val signalLost = suspendReason == SuspendReason.NO_SIGNAL ||
                 suspendReason == SuspendReason.STALE
             when {
                 // The strap is gone, but the bike can see the rider working. Losing a battery
                 // mid-ride should cost them nothing: the clock keeps running and the machine
                 // keeps its hands off the video.
-                signalLost && effort.vouchesForEffort() -> advanceBlind(now, deltaMs)
+                signalLost && effort.vouchesForEffort() -> {
+                    if (state == EnforcementState.PENALTY && !canPenalize()) {
+                        enter(EnforcementState.RIDING_BLIND, now)
+                    } else {
+                        advanceBlind(now, deltaMs)
+                    }
+                }
 
                 // A live penalty otherwise outlives the loss of the signal. No heart rate and
                 // no output usually means the strap came off with the rider, so the video
-                // should stay put; only the feature being switched off or its zones going away
-                // can release it here.
-                state == EnforcementState.PENALTY && signalLost -> Unit
+                // should stay put unless the rider releases it or switches enforcement off.
+                state == EnforcementState.PENALTY && signalLost && canPenalize() -> {
+                    // Unobserved time is not a continuous recovery hold.
+                    holdStartedAtMs = null
+                }
 
                 else -> {
                     drift = null

@@ -51,29 +51,24 @@ class MediaSessionStrategy(private val context: Context) : MediaPenaltyStrategy 
     override fun pause(): Boolean {
         val playing = controllers().filter { it.isPlaying() }
         if (playing.isEmpty()) return false
-        playing.forEach { runCatching { it.transportControls.pause() } }
-        pausedPackages = playing.map { it.packageName }
+        pausedPackages = playing.filter {
+            runCatching { it.transportControls.pause() }.isSuccess
+        }.map { it.packageName }
         Timber.i("Paused media sessions: %s", pausedPackages.joinToString())
-        return true
+        return pausedPackages.isNotEmpty()
     }
 
     override fun resume(): Boolean {
-        val targets = pausedPackages
-        pausedPackages = emptyList()
-        if (targets.isEmpty()) return false
-
+        if (pausedPackages.isEmpty()) return false
         val byPackage = controllers().associateBy { it.packageName }
-        var resumedAny = false
-        targets.forEach { packageName ->
-            val controller = byPackage[packageName] ?: return@forEach
-            // Never fight the user: if they already hit play, leave it be.
-            if (controller.isPlaying()) {
-                resumedAny = true
-                return@forEach
-            }
-            runCatching { controller.transportControls.play() }.onSuccess { resumedAny = true }
+        // Keep only unresolved targets. A retry must not replay an already released session.
+        pausedPackages = pausedPackages.filter { packageName ->
+            val controller = byPackage[packageName]
+            controller == null || runCatching {
+                if (!controller.isPlaying()) controller.transportControls.play()
+            }.isFailure
         }
-        return resumedAny
+        return pausedPackages.isEmpty()
     }
 
     private fun MediaController.isPlaying() =

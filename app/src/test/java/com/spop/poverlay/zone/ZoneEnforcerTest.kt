@@ -652,7 +652,8 @@ class ZoneEnforcerTest {
     @Test
     fun `restored credit skips the warm-up`() {
         enforcer = ZoneEnforcer(warmUp)
-        enforcer.restoreCredit(600_000)
+        // Enough to arm enforcement, but not enough to complete the ten-minute goal.
+        enforcer.restoreCredit(300_000)
         now = 0
         seen.clear()
         // A rider mid-ride whose process died. They are warm; do not give them a free window.
@@ -968,6 +969,87 @@ class ZoneEnforcerTest {
         establishHolding()
         advance(31_000, 100, watts = 70f)
         advance(16_000, 100, watts = 70f)
+        assertEquals(EnforcementState.PENALTY, last.state)
+    }
+
+    @Test
+    fun `release and penalty disable work with a dead or stale strap`() {
+        for (release in listOf(true, false)) {
+            for (stale in listOf(true, false)) {
+                reachPenalty()
+                if (release) enforcer.releaseByUser()
+                else enforcer.updateConfig(baseConfig.copy(penaltyEnabled = false))
+                advance(1_000, if (stale) 100 else null, hrAgeMs = 20_000)
+                assertNotEquals(EnforcementState.PENALTY, last.state)
+                assertEquals(1, countOf(PenaltyEffect.ResumeMedia))
+                assertEquals(1, countOf(PenaltyEffect.HideCurtain))
+            }
+        }
+    }
+
+    @Test
+    fun `release works immediately during blind recovery`() {
+        establishHolding()
+        advance(47_000, 100, watts = 60f)
+        assertEquals(EnforcementState.PENALTY, last.state)
+        enforcer.releaseByUser()
+        advance(1_000, null, watts = 150f)
+        assertEquals(1, countOf(PenaltyEffect.ResumeMedia))
+    }
+
+    @Test
+    fun `completion survives signal loss and disabling tracking`() {
+        for (disable in listOf(true, false)) {
+            start(baseConfig.copy(goalSeconds = 10))
+            advance(11_000, 130)
+            if (disable) enforcer.updateConfig(baseConfig.copy(enabled = false, goalSeconds = 10))
+            advance(20_000, null)
+            enforcer.updateConfig(baseConfig.copy(goalSeconds = 10))
+            advance(60_000, 90)
+            assertEquals(EnforcementState.COMPLETE, last.state)
+            assertEquals(0, countOf(PenaltyEffect.PauseMedia))
+            assertEquals(1, countOf(PenaltyEffect.GoalCompleted))
+        }
+    }
+
+    @Test
+    fun `restored completed credit never penalizes a cooldown`() {
+        start()
+        enforcer.restoreCredit(baseConfig.goalMs)
+        advance(60_000, 90)
+        assertEquals(EnforcementState.COMPLETE, last.state)
+        assertEquals(0, countOf(PenaltyEffect.PauseMedia))
+    }
+
+    @Test
+    fun `a missing signal breaks a recovery hold`() {
+        reachPenalty()
+        advance(2_000, 130)
+        advance(10_000, null)
+        advance(1_000, 130)
+        assertEquals(EnforcementState.PENALTY, last.state)
+        assertEquals(baseConfig.recoveryHoldMs, last.holdRemainingMs)
+        advance(5_000, 130)
+        assertEquals(EnforcementState.RECOVERING, last.state)
+    }
+
+    @Test
+    fun `missing power cannot keep blind credit running`() {
+        establishHolding()
+        val earned = last.creditSeconds
+        advance(130_000, null, watts = null)
+        assertEquals(EnforcementState.SUSPENDED, last.state)
+        assertEquals(earned, last.creditSeconds)
+    }
+
+    @Test
+    fun `an expired sensor arrival cannot prevent a penalty`() {
+        establishHolding()
+        val sample = PowerSample(150f, now)
+        repeat(60) {
+            now += 1_000
+            tick(100, watts = sample.freshWatts(now))
+        }
         assertEquals(EnforcementState.PENALTY, last.state)
     }
 }

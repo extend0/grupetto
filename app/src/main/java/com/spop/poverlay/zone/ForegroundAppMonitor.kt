@@ -8,6 +8,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Process
+import android.os.SystemClock
 import timber.log.Timber
 
 /**
@@ -27,13 +28,6 @@ class ForegroundAppMonitor(private val context: Context) {
          * The narrowest look-back worth asking for. Only has to outrun the poll interval.
          */
         private const val MinLookbackMs = 5_000L
-
-        /**
-         * The widest. Used on the first call, and after a stretch of not looking - a rider can
-         * sit on one screen for a long time, and the query returns events rather than a state,
-         * so too narrow a window comes back empty and tells us nothing.
-         */
-        private const val MaxLookbackMs = 60_000L
 
         /** Slack on either side of the gap being covered, for clock jitter. */
         private const val MarginMs = 2_000L
@@ -94,16 +88,16 @@ class ForegroundAppMonitor(private val context: Context) {
      * fat binder call and a thin one - and asking for a minute of history every second, as
      * this first did, is about twenty times the work needed to answer the same question.
      */
-    fun refresh() {
+    internal fun refresh(now: Long = System.currentTimeMillis()) {
         val manager = usageStats ?: return
-        val now = System.currentTimeMillis()
         val uncovered = if (lastRefreshAtMs == 0L) {
-            MaxLookbackMs
+            // Bootstrap from this boot, including an app opened before the overlay started.
+            SystemClock.elapsedRealtime() + MarginMs
         } else {
             now - lastRefreshAtMs + MarginMs
         }
-        val lookback = uncovered.coerceIn(MinLookbackMs, MaxLookbackMs)
-        val events = runCatching { manager.queryEvents(now - lookback, now) }.getOrNull() ?: return
+        val lookback = uncovered.coerceAtLeast(MinLookbackMs)
+        val events = runCatching { manager.queryEvents((now - lookback).coerceAtLeast(0L), now) }.getOrNull() ?: return
         lastRefreshAtMs = now
         val event = UsageEvents.Event()
         var latest: String? = null

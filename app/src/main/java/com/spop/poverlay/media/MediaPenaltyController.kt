@@ -25,7 +25,10 @@ class MediaPenaltyController(private val strategies: List<MediaPenaltyStrategy>)
     @Volatile
     private var activeStrategy: MediaPenaltyStrategy? = null
 
-    val pausedByUs: Boolean get() = activeStrategy != null
+    @Volatile
+    private var orphanedPause = false
+
+    val pausedByUs: Boolean get() = activeStrategy != null || orphanedPause
 
     /** Returns the display name of whatever worked, or null if nothing did. */
     @Synchronized
@@ -49,12 +52,17 @@ class MediaPenaltyController(private val strategies: List<MediaPenaltyStrategy>)
 
     @Synchronized
     fun resume(): Boolean {
-        val strategy = activeStrategy ?: return false
-        activeStrategy = null
+        val strategy = activeStrategy ?: return if (orphanedPause) resumeOrphaned() != null else false
         return runCatching { strategy.resume() }
             .onFailure { Timber.w(it, "Strategy %s failed to resume", strategy.id) }
             .getOrDefault(false)
-            .also { Timber.i("Media resumed via %s (success=%b)", strategy.id, it) }
+            .also {
+                if (it) {
+                    activeStrategy = null
+                    orphanedPause = false
+                }
+                Timber.i("Media resumed via %s (success=%b)", strategy.id, it)
+            }
     }
 
     /**
@@ -66,11 +74,13 @@ class MediaPenaltyController(private val strategies: List<MediaPenaltyStrategy>)
      */
     @Synchronized
     fun resumeOrphaned(): String? {
+        orphanedPause = true
         for (strategy in strategies) {
             val resumed = runCatching { strategy.resume() }
                 .onFailure { Timber.w(it, "Strategy %s failed to resume orphaned media", strategy.id) }
                 .getOrDefault(false)
             if (resumed) {
+                orphanedPause = false
                 Timber.i("Resumed orphaned media via %s", strategy.id)
                 return strategy.displayName
             }

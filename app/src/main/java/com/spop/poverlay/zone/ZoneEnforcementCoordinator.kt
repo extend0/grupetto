@@ -41,6 +41,7 @@ class ZoneEnforcementCoordinator(
         private const val IdlePeriodMs = 500L
 
         private const val PersistIntervalMs = 15_000L
+        private const val ResumeRetryMs = 5_000L
 
         /**
          * Effort health drives no side effect yet, so the log is the only way to watch it
@@ -64,7 +65,9 @@ class ZoneEnforcementCoordinator(
     // Read synchronously from ticks on another coroutine, so it must be volatile rather than
     // collected into the tick itself - the tick must never wait on the bike.
     @Volatile
-    private var latestWatts: Float? = null
+    private var latestPower: PowerSample? = null
+
+    private var lastResumeAttemptMs = 0L
 
     private var lastEffortLogMs = 0L
 
@@ -76,8 +79,9 @@ class ZoneEnforcementCoordinator(
         val restoredCredit = persistence.restoreCredit()
         if (persistence.wasMediaLeftPaused()) {
             Timber.w("Previous session died holding media paused; handing it back")
+            lastResumeAttemptMs = SystemClock.elapsedRealtime()
             media.resumeOrphaned()
-            persistence.save(restoredCredit, mediaPaused = false)
+            persistence.save(restoredCredit, media.pausedByUs)
         }
         enforcer.restoreCredit(restoredCredit)
 
@@ -87,7 +91,7 @@ class ZoneEnforcementCoordinator(
             }
         }
         jobs += scope.launch {
-            powerFlow.collect { latestWatts = it }
+            powerFlow.collect { latestPower = PowerSample(it, SystemClock.elapsedRealtime()) }
         }
         foreground?.let { monitor ->
             if (!monitor.hasPermission()) {
@@ -139,7 +143,7 @@ class ZoneEnforcementCoordinator(
         scope.launch {
             mutex.withLock {
                 enforcer.reset()
-                persistence.clear()
+                persistence.save(enforcer.creditMillis, media.pausedByUs)
             }
             tick()
         }
@@ -174,7 +178,7 @@ class ZoneEnforcementCoordinator(
                     hrAgeMs = HeartRateManager.heartRateAgeMs,
                     boundaries = HeartRateManager.heartRateZones.value,
                     isMoving = isMovingFlow.value,
-                    powerWatts = latestWatts,
+                    powerWatts = latestPower?.freshWatts(SystemClock.elapsedRealtime()),
                     // Our own settings report themselves; anything else has to be observed.
                     overlaySuppressed = ZoneRuntime.settingsVisible ||
                         foreground?.isLauncherForeground == true,
@@ -192,9 +196,18 @@ class ZoneEnforcementCoordinator(
         }
 
         logEffortIfDue(snapshot)
+        val wasPaused = media.pausedByUs
         snapshot.effects.forEach(::apply)
+        val now = SystemClock.elapsedRealtime()
+        // Effects are edge-triggered; a failed resume still needs another attempt.
+        if (snapshot.state != EnforcementState.PENALTY && media.pausedByUs &&
+            now - lastResumeAttemptMs >= ResumeRetryMs
+        ) {
+            lastResumeAttemptMs = now
+            media.resume()
+        }
         ZoneRuntime.publish(snapshot)
-        persistIfDue(snapshot)
+        persistIfDue(snapshot, wasPaused != media.pausedByUs)
     }
 
     private fun logEffortIfDue(snapshot: EnforcementSnapshot) {
@@ -205,7 +218,7 @@ class ZoneEnforcementCoordinator(
         Timber.i(
             "Zone effort health=%.2f bpm=%s trend=%s/min watts=%s holding=%s headroom=%ss",
             health, snapshot.smoothedBpm, snapshot.trendBpmPerMin?.let { "%.1f".format(it) },
-            latestWatts?.let { "%.0f".format(it) },
+            latestPower?.freshWatts(now)?.let { "%.0f".format(it) },
             snapshot.holdingWatts?.let { "%.0f".format(it) }, snapshot.headroomSeconds,
         )
     }
@@ -221,7 +234,10 @@ class ZoneEnforcementCoordinator(
                 }
             }
 
-            PenaltyEffect.ResumeMedia -> media.resume()
+            PenaltyEffect.ResumeMedia -> {
+                lastResumeAttemptMs = SystemClock.elapsedRealtime()
+                media.resume()
+            }
             PenaltyEffect.ShowCurtain -> onShowCurtain()
             PenaltyEffect.HideCurtain -> onHideCurtain()
             // Carried to the UI on the snapshot rather than pushed.
@@ -230,14 +246,14 @@ class ZoneEnforcementCoordinator(
         }
     }
 
-    private fun persistIfDue(snapshot: EnforcementSnapshot) {
+    private fun persistIfDue(snapshot: EnforcementSnapshot, mediaStateChanged: Boolean) {
         val now = SystemClock.elapsedRealtime()
         val dueByTime = now - lastPersistedAtMs >= PersistIntervalMs
         // Always record the moment media state changes, so a crash cannot strand it.
         val mediaChanged = snapshot.effects.any {
             it == PenaltyEffect.PauseMedia || it == PenaltyEffect.ResumeMedia
         }
-        if (!dueByTime && !mediaChanged) return
+        if (!dueByTime && !mediaChanged && !mediaStateChanged) return
         lastPersistedAtMs = now
         persistence.save(enforcer.creditMillis, media.pausedByUs)
     }

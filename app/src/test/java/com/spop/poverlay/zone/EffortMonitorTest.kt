@@ -256,4 +256,25 @@ class EffortMonitorTest {
         assertTrue("was $headroom", headroom < 30)
         assertTrue(monitor.health(135, band) < 0.6f)
     }
+
+    @Test
+    fun `missing power clears the live estimate and cannot vouch`() {
+        feed(70, 130, 150f)
+        assertTrue(monitor.vouchesForEffort())
+        feedPower(1, null)
+        assertNull(monitor.smoothedWatts)
+        assertTrue(!monitor.vouchesForEffort())
+        // A short outage does not erase the learned baseline.
+        feedPower(1, 150f)
+        assertTrue(monitor.vouchesForEffort())
+    }
+
+    @Test
+    fun `a long power outage invalidates the old baseline on reconnect`() {
+        feed(70, 130, 150f)
+        feedPower(130, null)
+        feedPower(1, 150f)
+        assertNull(monitor.holdingWatts)
+        assertTrue(!monitor.vouchesForEffort())
+    }
 }

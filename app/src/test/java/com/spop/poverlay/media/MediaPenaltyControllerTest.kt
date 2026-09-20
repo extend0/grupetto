@@ -13,6 +13,8 @@ class MediaPenaltyControllerTest {
         var available: Boolean = true,
         var pauseSucceeds: Boolean = true,
         var throwOnPause: Boolean = false,
+        var resumeSucceeds: Boolean = true,
+        var throwOnResume: Boolean = false,
     ) : MediaPenaltyStrategy {
         override val displayName = id
         var pauseCalls = 0
@@ -29,7 +31,8 @@ class MediaPenaltyControllerTest {
 
         override fun resume(): Boolean {
             resumeCalls++
-            return true
+            if (throwOnResume) throw IllegalStateException("resume failed")
+            return resumeSucceeds
         }
 
         override fun release() {
@@ -142,6 +145,44 @@ class MediaPenaltyControllerTest {
         assertEquals(1, first.resumeCalls)
         assertTrue(first.released)
         assertTrue(second.released)
+        assertFalse(controller.pausedByUs)
+    }
+
+    @Test
+    fun `failed resumes retain ownership until retry succeeds`() {
+        for (throws in listOf(true, false)) {
+            val strategy = FakeStrategy("only", resumeSucceeds = false, throwOnResume = throws)
+            val controller = MediaPenaltyController(listOf(strategy))
+            controller.pause()
+            assertFalse(controller.resume())
+            assertTrue(controller.pausedByUs)
+            strategy.resumeSucceeds = true
+            strategy.throwOnResume = false
+            assertTrue(controller.resume())
+            assertFalse(controller.pausedByUs)
+            assertFalse(controller.resume())
+            assertEquals(2, strategy.resumeCalls)
+        }
+    }
+
+    @Test
+    fun `failed teardown keeps the persisted recovery flag`() {
+        val strategy = FakeStrategy("only", resumeSucceeds = false)
+        val controller = MediaPenaltyController(listOf(strategy))
+        controller.pause()
+        controller.release()
+        assertTrue(controller.pausedByUs)
+        assertTrue(strategy.released)
+    }
+
+    @Test
+    fun `failed orphan recovery stays pending and can be retried`() {
+        val strategy = FakeStrategy("only", resumeSucceeds = false)
+        val controller = MediaPenaltyController(listOf(strategy))
+        assertNull(controller.resumeOrphaned())
+        assertTrue(controller.pausedByUs)
+        strategy.resumeSucceeds = true
+        assertTrue(controller.resume())
         assertFalse(controller.pausedByUs)
     }
 }

@@ -114,7 +114,10 @@ class EffortMonitor {
      * is credited on.
      */
     fun onPower(nowMs: Long, watts: Float?) {
-        if (watts == null || watts < 0f) return
+        if (watts == null || !watts.isFinite() || watts < 0f) {
+            smoothedWattsValue = null
+            return
+        }
         val previous = smoothedWattsValue
         val previousAt = lastPowerAtMs
         val dt = previousAt?.let { nowMs - it } ?: -1L

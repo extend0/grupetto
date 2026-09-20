@@ -61,7 +61,7 @@ class AudioFocusStrategy(context: Context) : MediaPenaltyStrategy {
 
     override fun resume(): Boolean {
         if (!held) return false
-        runCatching {
+        val released = runCatching {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 request?.let { audioManager.abandonAudioFocusRequest(it) }
             } else {
@@ -69,6 +69,8 @@ class AudioFocusStrategy(context: Context) : MediaPenaltyStrategy {
                 audioManager.abandonAudioFocus(null)
             }
         }.onFailure { Timber.w(it, "Abandoning audio focus failed") }
+            .getOrNull() == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+        if (!released) return false
         request = null
         held = false
         return true
