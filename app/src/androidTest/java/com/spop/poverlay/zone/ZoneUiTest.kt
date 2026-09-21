@@ -14,6 +14,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.spop.poverlay.overlay.OverlayLocation
 import com.spop.poverlay.overlay.composables.OverlayMinimizedContent
 import com.spop.poverlay.overlay.penalty.PenaltyCurtain
+import org.junit.Assert.assertTrue
 import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
@@ -43,6 +44,7 @@ class ZoneUiTest {
         val location = mutableStateOf(OverlayLocation.Bottom)
         var timerTaps = 0
         var settingsTaps = 0
+        var stripHeight = 0
         compose.setContent {
             MaterialTheme {
                 OverlayMinimizedContent(
@@ -52,16 +54,22 @@ class ZoneUiTest {
                     contentAlpha = 1f, timerLabel = "12:34", timerPaused = false,
                     zoneGoal = base(), onTap = { timerTaps++ }, onLongPress = {},
                     onOpenSettings = { settingsTaps++ },
-                    onMinimizeToggle = { minimized.value = !minimized.value }, onLayout = {},
+                    onMinimizeToggle = { minimized.value = !minimized.value },
+                    onLayout = { stripHeight = it.height },
                 )
             }
         }
+        val density = InstrumentationRegistry.getInstrumentation().targetContext.resources.displayMetrics.density
+        compose.waitForIdle()
+        compose.onNodeWithText("12:34").assertDoesNotExist()
+        compose.runOnIdle { assertTrue("Compact strip should stay within 54dp", stripHeight > 0 && stripHeight / density <= 54f) }
         for (edge in OverlayLocation.values()) {
             compose.runOnIdle { location.value = edge }
             repeat(3) {
                 compose.onNodeWithContentDescription("Expand").performTouchInput { click() }
                 compose.onNodeWithContentDescription("Minimize").assertIsDisplayed()
-                    .performTouchInput { click() }
+                compose.onNodeWithText("12:34").assertDoesNotExist()
+                compose.onNodeWithContentDescription("Minimize").performTouchInput { click() }
                 compose.onNodeWithContentDescription("Expand").assertIsDisplayed()
             }
             compose.onNodeWithContentDescription("Open settings").performTouchInput { click() }
@@ -88,6 +96,7 @@ class ZoneUiTest {
                 }
             }
         }
+        compose.onNodeWithText("12:34").assertDoesNotExist()
         compose.onNodeWithText("Warm-up", substring = true).assertIsDisplayed()
         capture("warmup")
         val armed = base().copy(enforcementArmed = true, warmupRemainingSeconds = 0, creditSeconds = 120)

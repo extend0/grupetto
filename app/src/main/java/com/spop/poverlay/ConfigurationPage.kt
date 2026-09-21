@@ -1,5 +1,7 @@
 package com.spop.poverlay
 
+import com.spop.poverlay.overlay.ShowLegacyRideTimer
+
 import android.os.Build
 import android.text.format.DateUtils
 import androidx.compose.foundation.rememberScrollState
@@ -205,30 +207,33 @@ private fun StartServicePage(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(uiScale.dp(12f))
         ) {
-            Card(
-                    modifier = Modifier.weight(1f),
-                    backgroundColor = cardColor,
-                    elevation = uiScale.dp(4f)
-            ) {
-                Column(modifier = Modifier.padding(cardPadding)) {
-                    Text("Timer Preference", fontSize = uiScale.sp(18f), fontWeight = FontWeight.Bold, color = headingColor)
-                    Spacer(modifier = Modifier.height(uiScale.dp(8f)))
-                    Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text("Show timer when minimized", fontSize = uiScale.sp(16f), color = bodyColor)
-                        Switch(
-                                checked = timerShownWhenMinimized,
-                                onCheckedChange = onTimerShownWhenMinimizedToggled,
-                                colors = SwitchDefaults.colors(
-                                        checkedThumbColor = Color(0xFF22C55E),
-                                        checkedTrackColor = Color(0xFF22C55E)
-                                )
-                        )
+            if (ShowLegacyRideTimer) {
+                Card(
+                        modifier = Modifier.weight(1f),
+                        backgroundColor = cardColor,
+                        elevation = uiScale.dp(4f)
+                ) {
+                    Column(modifier = Modifier.padding(cardPadding)) {
+                        Text("Timer Preference", fontSize = uiScale.sp(18f), fontWeight = FontWeight.Bold, color = headingColor)
+                        Spacer(modifier = Modifier.height(uiScale.dp(8f)))
+                        Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Show timer when minimized", fontSize = uiScale.sp(16f), color = bodyColor)
+                            Switch(
+                                    checked = timerShownWhenMinimized,
+                                    onCheckedChange = onTimerShownWhenMinimizedToggled,
+                                    colors = SwitchDefaults.colors(
+                                            checkedThumbColor = Color(0xFF22C55E),
+                                            checkedTrackColor = Color(0xFF22C55E)
+                                    )
+                            )
+                        }
                     }
                 }
+
             }
 
             Card(

@@ -34,6 +34,7 @@ import com.spop.poverlay.zone.EnforcementSnapshot
 import com.spop.poverlay.zone.EnforcementState
 import com.spop.poverlay.zone.ridingStatus
 import com.spop.poverlay.overlay.BackgroundColorDefault
+import com.spop.poverlay.overlay.ShowLegacyRideTimer
 import com.spop.poverlay.overlay.OverlayLocation
 
 
@@ -89,7 +90,7 @@ fun OverlayMinimizedContent(
             .padding(horizontal = 10.dp)
             .padding(top = 1.dp)
             .animateContentSize()
-            .pointerInput(Unit) {
+            .then(if (ShowLegacyRideTimer) Modifier.pointerInput(Unit) {
                 detectTapGestures(
                     onTap = {
                         onTap()
@@ -98,17 +99,17 @@ fun OverlayMinimizedContent(
                         onLongPress()
                     }
                 )
-            },
+            } else Modifier),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        val infiniteTransition = rememberInfiniteTransition()
 
         val isDrifting = zoneGoal?.drift != null &&
             zoneGoal.state != EnforcementState.SUSPENDED &&
             zoneGoal.state != EnforcementState.COMPLETE
 
-        if (!isMinimized || showTimerWhenMinimized || timerPaused) {
+        if (ShowLegacyRideTimer && (!isMinimized || showTimerWhenMinimized || timerPaused)) {
+            val infiniteTransition = rememberInfiniteTransition()
 
             val timerAlpha = if (timerPaused) {
                 infiniteTransition.animateFloat(
@@ -133,8 +134,7 @@ fun OverlayMinimizedContent(
         }
 
         if (zoneGoal?.ridingStatus() != null) {
-            Spacer(modifier = Modifier.width(8.dp))
-            ZoneStatusStrip(zoneGoal)
+            ZoneStatusStrip(zoneGoal, compact = isMinimized)
         }
 
         Spacer(modifier = Modifier.width(6.dp))

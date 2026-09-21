@@ -12,6 +12,9 @@ import kotlinx.coroutines.launch
 import kotlin.time.ExperimentalTime
 import kotlin.time.Duration.Companion.seconds
 
+/** Retain the legacy timer implementation while the zone goal is the visible ride clock. */
+const val ShowLegacyRideTimer = false
+
 @OptIn(ExperimentalTime::class)
 open class OverlayTimerViewModel(
     application: Application,
