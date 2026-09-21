@@ -8,28 +8,36 @@ Grupetto records indoor rides on the tablet. A hosted server and a second record
 
 Samples are saved once a second. If the process is interrupted, the recorded portion survives. When you reopen the app, Resume or Finish the interrupted recording; if its inactivity deadline already passed, it is finalized automatically. Missing readings and sleep gaps are not filled with invented data. No-pedaling sessions stay local and cannot be uploaded.
 
-## Personal Strava setup
+## Connect through your upload server
 
-1. Sign in at https://www.strava.com/settings/api and create your own API application. Set **Authorization Callback Domain** to **127.0.0.1**. Check that the application has active developer access in Strava's dashboard.
-2. Open **Workouts & Strava → Strava connection**. Enter your own client ID and client secret. These are application credentials, not your Strava password.
-3. Tap **Connect Strava** and grant permission to upload activities in the browser. The app listens for the reply on a temporary port accessible only on the tablet. The browser shows a completion page with a return-to-Grupetto link.
-4. If the browser cannot complete the return, use **Copy authorization link**, authorize in a browser, and paste its complete final URL into the app. On another device the loopback page is expected not to load; copy its address. Complete this within ten minutes. A rejected, expired, or already-used response requires starting Connect again.
+The private upload server owns Strava authorization and token refresh. Grupetto stores only a revocable device credential and your privately supplied server address; no Strava client secret belongs on the tablet or in this repository.
 
-No embedded WebView receives your password. The app encrypts your personal client secret and tokens with a Keystore-protected key and excludes them from Android backup/transfer. Tokens refresh automatically. Clearing app data or reinstalling may require connecting again. Disconnect first to change credentials or accounts, and finish an active recording before doing so. Disconnect removes local credentials and cancels scheduled uploads; to revoke the application itself, remove it in Strava's application settings.
+1. Sign into your existing upload server website as the rider.
+2. Choose **Enable workout uploads** and authorize activity reading and uploading in Strava.
+3. Choose **Create tablet pairing link**. Copy the link into **Workouts & Strava → Strava connection** and tap **Connect to upload server** within ten minutes.
+4. Check the member and athlete shown on the tablet before recording.
 
-This is a personal-credentials integration. Do not ship a shared client secret in an APK or commit one to the repository. A public integration should use a backend to protect its shared application secret.
+One rider is connected at a time. Finish the active recording before changing connections. Existing workouts retain their rider and server. The link contains a one-time secret: do not put it in Git, chat, screenshots, or logs. It stays out of URL query strings. The tablet encrypts its device credential with Android Keystore and excludes it from backup. Pairing expires after 90 days; create a new link to reconnect. No browser login must stay open during a ride.
+
+Disconnect tablet revokes the device credential when online without disconnecting Strava from goal tracking. If offline, revoke it on the upload server website. Jobs already received by the upload server continue; local recordings remain on the tablet.
+
+## Migration from direct Strava upload
+
+The first launch removes the old local Strava credentials. Connect to upload server to resume uploading. The database upgrade retains recordings and samples, and marks interrupted direct uploads for explicit review. Already uploaded rides are never resubmitted automatically. Before retrying a review item, check Strava for a completed activity.
 
 ## Uploads and history
 
 Automatic upload is enabled by default for rides recorded while connected. You can turn it off and use **Workout history → Upload / Retry**. Rides recorded before connection require an explicit upload action. Workouts already associated with another athlete require reconnecting that account.
 
-Uploads include power, cadence, heart rate when available, and distance estimated from power. They have no fabricated GPS route. Resistance is kept locally and summarized in the description. Strava's activity visibility follows your Strava defaults. A connection does not require permission to read your other rides.
+Uploads include power, cadence, heart rate when available, and distance estimated from power. They have no fabricated GPS route. Resistance is kept locally and summarized in the description. Strava's activity visibility follows your Strava defaults. The upload server also uses activity reading permission for household goal tracking.
 
-WorkManager waits for connectivity and retries transient errors with backoff; Android may defer work during sleep. Strava processing is polled until an activity ID is returned. Rate-limit reset times are honored. A submission interrupted before its upload ID was saved is marked **check Strava before retrying**: inspect your activities before explicitly retrying. External IDs are not assumed to be an idempotency guarantee.
+WorkManager waits for connectivity and sends TCX to the upload server with a stable delivery ID. The upload server persists the file and job before acknowledging receipt, then uploads and polls Strava independently of the tablet. TCX files are deleted after success or expire after seven days; the cloud is not a workout archive. Rate limits and temporary outages are retried. Files larger than 8 MiB must be exported locally. A submission interrupted before its upload ID was saved is marked **check Strava before retrying**: inspect your activities before explicitly retrying. External IDs are not assumed to be an idempotency guarantee.
 
 History retains the newest **30 uploaded rides and every unsynced ride**. Export TCX saves an independent copy using Android's file picker. Delete locally removes local samples, not the Strava activity. Keep exported copies of rides you want to archive beyond retention. Queued/processing rides cannot be deleted while an upload may still be in flight.
 
 ## Development and verification
+
+Run `python3 scripts/check-private-data.py` before sharing changes. It checks tracked and commit-eligible untracked files for private deployment addresses and credential patterns. Enable the staged-content check with `git config core.hooksPath .githooks`; CI runs the same guard. Keep local credentials in ignored configuration files and use `example.invalid` for sample server addresses.
 
 Use JDK 17 and the checked-in Gradle 8.13 wrapper. Kotlin 1.9's kapt processor is incompatible with the previous Gradle 9 wrapper; Room uses kapt here without changing the Kotlin/Compose versions or minimum Android SDK.
 
@@ -38,6 +46,6 @@ Use JDK 17 and the checked-in Gradle 8.13 wrapper. Kotlin 1.9's kapt processor i
 ./gradlew assembleDebugAndroidTest
 ```
 
-Device checks should use the `.dev` build, which installs separately from the stable app. Instrumentation tests use isolated database/credential filenames. Verify the browser callback, real short ride upload and charts, offline retry, screen-off at the configured timeout, and BLE on/off. Authentication against Strava and a real activity upload require the owner's credentials and authorization; never place them in tests or logs.
+Device checks should use the `.dev` build, which installs separately from the stable app. Instrumentation tests use isolated database/credential filenames. Verify the browser callback, real short ride upload and charts, offline retry, screen-off at the configured timeout, and BLE on/off. Authentication against Strava and a real activity upload require the rider's upload server pairing and Strava authorization; never place them in tests or logs.
 
 References: [Strava authentication](https://developers.strava.com/docs/authentication/), [upload formats](https://developers.strava.com/docs/uploads/), [native OAuth](https://www.rfc-editor.org/rfc/rfc8252), [WorkManager](https://developer.android.com/develop/background-work/background-tasks/persistent), [Pacelet](https://github.com/LiamCordelle/pacelet), [stravacli](https://github.com/dlenski/stravacli).

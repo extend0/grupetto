@@ -3,36 +3,14 @@ package com.spop.poverlay.sensor.v1new
 import android.os.IBinder
 import android.os.Parcel
 import com.spop.poverlay.sensor.BikeData
-import kotlinx.coroutines.channels.BufferOverflow
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.asSharedFlow
 import timber.log.Timber
 
 class V1NewCombinedSensor(
-    private val binder: IBinder
+    private val binder: IBinder,
+    private val onReading: (BikeData) -> Unit,
+    private val onError: () -> Unit,
 ) {
-    private val mutablePower = MutableSharedFlow<Float>(
-        replay = 1,
-        extraBufferCapacity = 64,
-        onBufferOverflow = BufferOverflow.DROP_OLDEST
-    )
-    val power = mutablePower.asSharedFlow()
-
-    private val mutableCadence = MutableSharedFlow<Float>(
-        replay = 1,
-        extraBufferCapacity = 64,
-        onBufferOverflow = BufferOverflow.DROP_OLDEST
-    )
-    val cadence = mutableCadence.asSharedFlow()
-
-    private val mutableResistance = MutableSharedFlow<Float>(
-        replay = 1,
-        extraBufferCapacity = 64,
-        onBufferOverflow = BufferOverflow.DROP_OLDEST
-    )
-    val resistance = mutableResistance.asSharedFlow()
-
-    private var isRegistered = false
+    @Volatile private var isRegistered = false
     private val callbackBinder = createCallback()
 
     companion object {
@@ -42,25 +20,29 @@ class V1NewCombinedSensor(
         private const val UNREGISTER_CODE = 2
     }
 
+    @Synchronized
     fun start() {
         if (isRegistered) {
             Timber.w("V1NewCombinedSensor already started")
             return
         }
         try {
-            registerCallback()
             isRegistered = true
+            registerCallback()
             Timber.d("V1NewCombinedSensor started successfully")
         } catch (e: Exception) {
-            Timber.e(e, "Failed to start V1NewCombinedSensor")
+            isRegistered = false
+            runCatching { unregisterCallback() }
+            throw e
         }
     }
 
+    @Synchronized
     fun stop() {
         if (!isRegistered) return
+        isRegistered = false
         try {
             unregisterCallback()
-            isRegistered = false
             Timber.d("V1NewCombinedSensor stopped successfully")
         } catch (e: Exception) {
             Timber.e(e, "Failed to stop V1NewCombinedSensor")
@@ -110,6 +92,7 @@ class V1NewCombinedSensor(
 
     private fun createCallback() = object : android.os.Binder() {
         override fun onTransact(code: Int, data: Parcel, reply: Parcel?, flags: Int): Boolean {
+            if (!isRegistered) return true
             return when (code) {
                 1 -> { // onSensorDataChange
                     try {
@@ -124,15 +107,11 @@ class V1NewCombinedSensor(
                         }
                         
                         if (bikeData != null) {
-                            // Power is divided by 100.0f
-                            mutablePower.tryEmit(bikeData.power.toFloat() / 100.0f)
-                            // RPM
-                            mutableCadence.tryEmit(bikeData.rpm.toFloat())
-                            // Resistance see V1ResistanceSensor.kt
-                            mutableResistance.tryEmit(bikeData.currentResistance.toFloat())
+                            onReading(bikeData)
                         }
                         true
                     } catch (e: Exception) {
+                        onError()
                         Timber.e(e, "Error processing sensor data")
                         false
                     }
@@ -141,6 +120,7 @@ class V1NewCombinedSensor(
                     try {
                         data.enforceInterface(CALLBACK_DESCRIPTOR)
                         val errorCode = data.readLong()
+                        onError()
                         Timber.w("Sensor error: $errorCode")
                         true
                     } catch (e: Exception) {

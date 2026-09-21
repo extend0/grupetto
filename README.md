@@ -101,7 +101,7 @@ After following those steps, the APK for grupetto can be found on the Releases t
 
 # Workout recording and Strava
 
-Record rides locally and automatically upload them using your personal Strava API application. Recording and zone enforcement share a configurable **25-minute inactivity auto-end**. See the [setup and recovery guide](docs/strava.md).
+Record rides locally and automatically deliver them through your private upload server to the connected rider's Strava account. Pair the tablet using a private link from your household website; no Strava client secret or deployment address is embedded in the app. Recording and zone enforcement share a configurable **25-minute inactivity auto-end**. See the [setup and recovery guide](docs/strava.md).
 
 # Implementation
 

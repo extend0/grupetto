@@ -21,6 +21,8 @@ class GrupettoApplication : Application() {
     lateinit var workoutSettings: com.spop.poverlay.workout.WorkoutSettings
     lateinit var strava: com.spop.poverlay.strava.StravaAuthManager
     lateinit var recorder: com.spop.poverlay.workout.WorkoutRecorder
+    lateinit var sensorInterface: SensorInterface
+        private set
     lateinit var bleServer: BleServer
         private set
 
@@ -46,7 +48,7 @@ class GrupettoApplication : Application() {
         }
 
         val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
-        val sensorInterface = createSensorInterface()
+        sensorInterface = createSensorInterface()
         bleServer = BleServer(this, bluetoothManager, sensorInterface)
     }
 

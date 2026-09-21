@@ -31,6 +31,11 @@ fun Flow<Float>.smoothSensorValue(
     var lastNonZeroMs = System.currentTimeMillis()
     val kalmanFilter = KalmanFilter(processNoise, sensorNoise, estimatedError)
     return map { sensorValue: Float ->
+        if (!sensorValue.isFinite()) {
+            kalmanFilter.resetParameters()
+            kalmanFilter.currentValue = 0f
+            return@map Float.NaN
+        }
         if (System.currentTimeMillis() - lastNonZeroMs > parameterTimeout) {
             kalmanFilter.resetParameters()
         }

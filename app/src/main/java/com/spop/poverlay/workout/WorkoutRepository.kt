@@ -33,6 +33,8 @@ data class Workout(
     val distanceMeters: Double = 0.0,
     val title: String = "Grupetto Indoor Ride",
     val retryAfter: Long = 0,
+    val deliveryOrigin: String? = null,
+    val deliveryId: String? = null,
 )
 
 @Entity(tableName = "samples", primaryKeys = ["workoutId", "timeMs"],
@@ -64,11 +66,17 @@ interface WorkoutDao {
     @Query("DELETE FROM workouts WHERE status = 'uploaded' AND id NOT IN (SELECT id FROM workouts WHERE status = 'uploaded' ORDER BY startedAt DESC LIMIT 30)") suspend fun prune()
 }
 
-@Database(entities = [Workout::class, WorkoutSample::class], version = 1, exportSchema = false)
+@Database(entities = [Workout::class, WorkoutSample::class], version = 2, exportSchema = false)
 abstract class WorkoutDatabase : RoomDatabase() { abstract fun workouts(): WorkoutDao }
 
 class WorkoutRepository(context: Context, databaseName: String = "workouts.db") {
-    val database = Room.databaseBuilder(context.applicationContext, WorkoutDatabase::class.java, databaseName).build()
+    val database = Room.databaseBuilder(context.applicationContext, WorkoutDatabase::class.java, databaseName).addMigrations(object : androidx.room.migration.Migration(1, 2) {
+        override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+            db.execSQL("ALTER TABLE workouts ADD COLUMN deliveryOrigin TEXT")
+            db.execSQL("ALTER TABLE workouts ADD COLUMN deliveryId TEXT")
+            db.execSQL("UPDATE workouts SET status = 'check Strava before retrying', error = 'Previous direct upload needs review before upload server delivery.' WHERE status IN ('uploading', 'processing') OR (uploadId IS NOT NULL AND status != 'uploaded')")
+        }
+    }).build()
     val dao = database.workouts()
     val history = dao.observe()
 

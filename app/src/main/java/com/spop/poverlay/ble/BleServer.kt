@@ -1085,6 +1085,14 @@ class BleServer(
                                 sensorInterface.resistance
                         ) { cadence, power, speed, resistance ->
                             mutex.withLock {
+                                if (!cadence.isFinite() || !power.isFinite() || !speed.isFinite() || !resistance.isFinite()) {
+                                    cscLastUpdateMs = timeProvider.elapsedRealtime()
+                                    cadenceBuffer.clear()
+                                    powerBuffer.clear()
+                                    speedBuffer.clear()
+                                    resistanceBuffer.clear()
+                                    return@withLock
+                                }
                                 cadenceBuffer.add(cadence)
                                 powerBuffer.add(power)
                                 speedBuffer.add(speed)

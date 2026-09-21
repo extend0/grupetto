@@ -5,43 +5,43 @@ import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.os.IBinder
-import timber.log.Timber
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
-import kotlin.coroutines.suspendCoroutine
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.callbackFlow
+import java.io.IOException
 
 const val SERVICE_ACTION = "com.onepeloton.affernetservice.IV1Interface"
-private const val SERVICE_PACKAGE = "com.onepeloton.affernetservice"
-private const val SERVICE_INTENT = "com.onepeloton.affernetservice.AffernetService"
 
-suspend fun getV1NewBinder(context: Context) = suspendCoroutine<IBinder> { ctx ->
-    context.bindService(
-        Intent(SERVICE_INTENT).apply {
-            setAction(SERVICE_ACTION)
-            setPackage(SERVICE_PACKAGE)
-        }, object : ServiceConnection {
-            override fun onServiceConnected(p0: ComponentName?, iBinder: IBinder?) {
-                Timber.i("V1 sensor service connected $p0")
-                if(iBinder == null){
-                    Timber.i("V1 sensor service resolution failed $p0")
-                    ctx.resumeWithException(Exception("V1 sensor service resolution failed"))
-                }else{
-                    ctx.resume(iBinder)
-                }
-            }
-
-            override fun onBindingDied(name: ComponentName?) {
-                super.onBindingDied(name)
-                Timber.i("V1 sensor service binding died $name")
-            }
-            
-            override fun onNullBinding(name: ComponentName?) {
-                Timber.i("V1 sensor service null binding $name")
-            }
-
-            override fun onServiceDisconnected(p0: ComponentName?) {
-                Timber.i("V1 sensor service disconnected $p0")
-            }
-
-        }, Context.BIND_AUTO_CREATE)
+/** Own the binding for the collection lifetime, including cancellation and service death. */
+internal fun v1Bindings(context: Context) = callbackFlow<IBinder> {
+    val deadline = launch {
+        delay(30_000)
+        close(IOException("Peloton sensor binding timed out"))
+    }
+    val connection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
+            if (binder == null) close(IOException("Peloton sensor service returned no binder"))
+            else { deadline.cancel(); trySend(binder) }
+        }
+        override fun onServiceDisconnected(name: ComponentName?) {
+            close(IOException("Peloton sensor service disconnected"))
+        }
+        override fun onBindingDied(name: ComponentName?) {
+            close(IOException("Peloton sensor binding died"))
+        }
+        override fun onNullBinding(name: ComponentName?) {
+            close(IOException("Peloton sensor service returned a null binding"))
+        }
+    }
+    val intent = Intent(SERVICE_ACTION).setPackage("com.onepeloton.affernetservice")
+    try {
+        if (!context.bindService(intent, connection, Context.BIND_AUTO_CREATE)) {
+            close(IOException("Cannot bind Peloton sensor service"))
+        }
+        awaitClose { }
+    } finally {
+        deadline.cancel()
+        runCatching { context.unbindService(connection) }
+    }
 }

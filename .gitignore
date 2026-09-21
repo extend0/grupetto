@@ -24,3 +24,11 @@ CLAUDE.md
 keystore.properties
 *.jks
 *.keystore
+
+# Private integration configuration
+.env*
+.dev.vars*
+!.env.example
+!.dev.vars.example
+**/wrangler.local.jsonc
+private-notes/

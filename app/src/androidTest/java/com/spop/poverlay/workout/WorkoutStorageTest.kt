@@ -31,6 +31,25 @@ class WorkoutStorageTest {
         } finally { db.close() }
     }
 
+    @Test fun upgradePreservesSamplesAndRequiresReviewForOldInFlightUploads() = runBlocking {
+        val name = "migration-${java.util.UUID.randomUUID()}.db"
+        val legacy = context.openOrCreateDatabase(name, 0, null)
+        legacy.execSQL("CREATE TABLE workouts (id TEXT NOT NULL PRIMARY KEY, startedAt INTEGER NOT NULL, endedAt INTEGER, lastPedaledAt INTEGER, status TEXT NOT NULL, reason TEXT, athleteId INTEGER, uploadId INTEGER, activityId INTEGER, error TEXT, distanceMeters REAL NOT NULL, title TEXT NOT NULL, retryAfter INTEGER NOT NULL)")
+        legacy.execSQL("CREATE TABLE samples (workoutId TEXT NOT NULL, timeMs INTEGER NOT NULL, watts REAL, cadence REAL, resistance REAL, speedMps REAL, heartRate INTEGER, distanceMeters REAL NOT NULL, PRIMARY KEY(workoutId,timeMs), FOREIGN KEY(workoutId) REFERENCES workouts(id) ON UPDATE NO ACTION ON DELETE CASCADE)")
+        legacy.execSQL("INSERT INTO workouts (id,startedAt,status,distanceMeters,title,retryAfter) VALUES ('old',1000,'uploading',10.0,'Old ride',0)")
+        legacy.execSQL("INSERT INTO samples (workoutId,timeMs,distanceMeters) VALUES ('old',1000,10.0)")
+        legacy.version = 1
+        legacy.close()
+        val repo = WorkoutRepository(context, name)
+        try {
+            val ride = repo.dao.get("old")!!
+            assertEquals(WorkoutStatus.REVIEW, ride.status)
+            assertEquals("Old ride", ride.title)
+            assertNull(ride.deliveryOrigin)
+            assertEquals(1, repo.dao.samples("old").size)
+        } finally { repo.database.close(); context.deleteDatabase(name) }
+    }
+
     @Test fun credentialsAreEncryptedAndSurviveReopening() {
         val vault = CredentialVault(context, "test-strava-credentials")
         try {

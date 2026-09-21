@@ -72,10 +72,8 @@ fun WorkoutSettingsCard() {
     val scope = rememberCoroutineScope()
     val athlete by app.strava.athleteName.collectAsState()
     val authMessage by app.strava.message.collectAsState()
-    val authUrl by app.strava.authorizationUrl.collectAsState()
-    var clientId by remember { mutableStateOf("") }
-    var secret by remember { mutableStateOf("") }
-    var callback by remember { mutableStateOf("") }
+    val uploadServerOrigin by app.strava.origin.collectAsState()
+    var pairingLink by remember { mutableStateOf("") }
     var expanded by remember { mutableStateOf(false) }
     var history by remember { mutableStateOf(false) }
     var timeout by remember { mutableStateOf(app.workoutSettings.timeoutMinutes) }
@@ -90,7 +88,7 @@ fun WorkoutSettingsCard() {
     Card(Modifier.fillMaxWidth().padding(16.dp), elevation = 2.dp) {
         Column(Modifier.padding(16.dp)) {
             Text("Workouts & Strava", style = MaterialTheme.typography.h6)
-            Text(athlete?.let { "Connected as $it" } ?: "Record locally, then connect your personal Strava account to upload.")
+            Text(athlete?.let { "Uploads to $it on Strava" } ?: "Connect to upload server to send your workouts to Strava.")
             WorkoutOverlayControls()
             if (!app.recorder.ready.collectAsState().value && current == null) Text("Start the overlay to begin recording.")
             Text("Auto-end after no pedaling: ${if (timeout == 0) "Off" else "$timeout minutes"}")
@@ -111,46 +109,33 @@ fun WorkoutSettingsCard() {
                 TextButton(onClick = { history = true }) { Text("Workout history") }
             }
             if (expanded) {
-                Text("Personal setup: create your own Strava API application. Set Authorization Callback Domain to 127.0.0.1. Enter its client ID and secret here once. Your Strava password stays in the browser.")
-                TextButton(onClick = { open("https://www.strava.com/settings/api") }) { Text("Open Strava API settings") }
-                OutlinedTextField(clientId, { clientId = it }, label = { Text("Personal client ID") }, singleLine = true)
-                OutlinedTextField(secret, { secret = it }, label = { Text("Personal client secret") }, visualTransformation = PasswordVisualTransformation(), singleLine = true)
+                Text("On your upload server page, sign in as the rider, enable workout uploads, then create a tablet pairing link. Paste that link here. It expires in ten minutes.")
+                uploadServerOrigin?.let { url -> TextButton(onClick = { open(url) }) { Text("Open upload server") } }
+                OutlinedTextField(pairingLink, { pairingLink = it }, label = { Text("Private pairing link") }, visualTransformation = PasswordVisualTransformation(), singleLine = true)
                 Row {
-                    Button(enabled = !busy && current == null && athlete == null, onClick = {
+                    Button(enabled = !busy && current == null && athlete == null && pairingLink.isNotBlank(), onClick = {
                         busy = true; failure = null
                         scope.launch {
                             try {
                                 WorkManager.getInstance(context).cancelAllWorkByTag(StravaUploadWorker.Tag)
-                                val url = app.strava.connect(clientId, secret)
-                                secret = ""
-                                open(url)
+                                app.strava.connect(pairingLink)
+                                pairingLink = ""
                             } catch (e: Exception) { failure = e.message ?: "Could not connect." }
                             finally { busy = false }
                         }
-                    }) { Text("Connect Strava") }
+                    }) { Text("Connect to upload server") }
                     TextButton(enabled = !busy && current == null, onClick = {
+                        busy = true
                         scope.launch {
-                            WorkManager.getInstance(context).cancelAllWorkByTag(StravaUploadWorker.Tag)
-                            app.strava.disconnect()
+                            try {
+                                WorkManager.getInstance(context).cancelAllWorkByTag(StravaUploadWorker.Tag)
+                                app.strava.disconnect()
+                            } finally { busy = false }
                         }
-                    }) { Text("Disconnect") }
+                    }) { Text("Disconnect tablet") }
                 }
                 if (current != null) Text("Finish the current workout before changing accounts.")
-                if (athlete != null) Text("Disconnect first to reconnect or change credentials.")
-                authUrl?.let { url ->
-                    TextButton(onClick = {
-                        (context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("Strava authorization", url))
-                    }) { Text("Copy authorization link") }
-                    Text("If the browser cannot return automatically, paste its complete final URL here. On another device the callback page may fail to load; its address still contains the response.")
-                    OutlinedTextField(callback, { callback = it }, label = { Text("Returned URL") })
-                    Row {
-                        TextButton(onClick = { scope.launch {
-                            try { app.strava.acceptCallback(callback); callback = "" }
-                            catch (e: Exception) { failure = e.message }
-                        } }) { Text("Complete connection") }
-                        TextButton(onClick = { app.strava.cancelAuthorization() }) { Text("Cancel connection") }
-                    }
-                }
+                if (athlete != null) Text("New workouts belong to this rider. Disconnect before pairing another account. Existing rides keep their original rider.")
             }
             authMessage?.let { Text(it) }
             failure?.let { Text(it, color = MaterialTheme.colors.error) }

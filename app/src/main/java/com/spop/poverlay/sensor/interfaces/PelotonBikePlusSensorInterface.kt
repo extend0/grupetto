@@ -24,6 +24,7 @@ class PelotonBikePlusSensorInterface(val context: Context) : SensorInterface, Co
          */
         const val ResistanceMovingAverageWindowSize = 3
     }
+    override val coroutineContext: CoroutineContext = SupervisorJob() + Dispatchers.IO
     private val binder = MutableSharedFlow<IBinder>(replay = 1)
 
     init {
@@ -33,8 +34,6 @@ class PelotonBikePlusSensorInterface(val context: Context) : SensorInterface, Co
         }
     }
 
-    override val coroutineContext: CoroutineContext
-        get() = SupervisorJob()
 
     fun stop() {
         coroutineContext.cancelChildren()

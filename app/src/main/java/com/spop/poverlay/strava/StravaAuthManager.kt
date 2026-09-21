@@ -10,6 +10,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import okhttp3.*
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.io.File
 import java.math.BigInteger
@@ -66,143 +68,104 @@ class CredentialVault(private val context: Context, name: String = "strava-crede
 }
 
 class StravaHttpException(val status: Int, val retryAt: Long = 0) : Exception(when (status) {
-    401 -> "Strava authorization expired. Reconnect your account."
-    403 -> "Strava access denied. Check application access and reconnect with upload permission."
-    429 -> "Strava rate limit reached. Upload will retry later."
-    in 500..599 -> "Strava is temporarily unavailable."
-    else -> "Strava rejected the request (HTTP $status)."
+    401, 403 -> "Reconnect this tablet on your upload server."
+    409 -> "The workout or Strava connection needs attention on your upload server."
+    413 -> "This workout is too large to upload. Export the TCX file."
+    429 -> "Upload rate limit reached. Delivery will retry later."
+    in 500..599 -> "Upload server is temporarily unavailable."
+    else -> "Upload server rejected the request (HTTP $status)."
 })
 
+data class UploadServerConnection(val origin: String, val athlete: Long, val credential: String)
+
+/** Stores only a member-scoped upload server device credential. Strava tokens remain on the server. */
 class StravaAuthManager(
     private val context: Context,
     private val scope: CoroutineScope,
-    val client: OkHttpClient = OkHttpClient.Builder().callTimeout(45, java.util.concurrent.TimeUnit.SECONDS).build(),
+    client: OkHttpClient = OkHttpClient.Builder().callTimeout(45, java.util.concurrent.TimeUnit.SECONDS).build(),
     private val vault: CredentialVault = CredentialVault(context),
 ) {
+    val client = client.newBuilder().followRedirects(false).followSslRedirects(false).build()
     private val mutex = Mutex()
     val initialized = CompletableDeferred<Unit>()
     val athleteName = MutableStateFlow<String?>(null)
     val athleteId = MutableStateFlow<Long?>(null)
     val message = MutableStateFlow<String?>(null)
-    val authorizationUrl = MutableStateFlow<String?>(null)
-    private var listener: ServerSocket? = null
-    private var authJob: Job? = null
-    private var state: String? = null
-    private var callback: Uri? = null
-    private var authStartedAt = 0L
-
+    val origin = MutableStateFlow<String?>(null)
     init { scope.launch(Dispatchers.IO) {
-        try { mutex.withLock { publish(vault.read()) } } catch (_: Exception) { message.value = "Saved credentials could not be opened. Disconnect and connect again." }
+        try { mutex.withLock {
+            val data = vault.read()
+            if (data.has("client_secret") || data.has("refresh_token")) {
+                vault.clear()
+                message.value = "Connect to upload server to resume uploads. Your local workouts are kept."
+            } else publish(data)
+        } } catch (_: Exception) { message.value = "Saved connection could not be opened. Connect again." }
         finally { initialized.complete(Unit) }
     } }
     private fun publish(data: JSONObject) {
-        athleteId.value = data.optLong("athlete_id").takeIf { it > 0 }
-        athleteName.value = data.optString("athlete_name").takeIf { it.isNotBlank() }
+        origin.value = data.optString("origin").takeIf { it.isNotBlank() }
+        athleteId.value = data.optLong("athlete_id").takeIf { it > 0 && origin.value != null }
+        athleteName.value = data.optString("athlete_name").takeIf { it.isNotBlank() && athleteId.value != null }
     }
-    suspend fun connect(clientId: String, secret: String): String = withContext(Dispatchers.IO) {
-        require(clientId.toLongOrNull()?.let { it > 0 } == true && secret.isNotBlank()) { "Enter your personal Strava client ID and secret." }
-        cancelAuthorization()
+    suspend fun connect(link: String) = withContext(Dispatchers.IO) {
+        initialized.await()
         mutex.withLock {
-            vault.write(JSONObject().put("client_id", clientId.trim()).put("client_secret", secret.trim()))
-            publish(JSONObject())
-        }
-        val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
-        server.soTimeout = 10 * 60 * 1000
-        listener = server
-        state = ByteArray(32).also { SecureRandom().nextBytes(it) }.let { Base64.encodeToString(it, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING) }
-        authStartedAt = android.os.SystemClock.elapsedRealtime()
-        callback = Uri.parse("http://127.0.0.1:${server.localPort}/strava/callback")
-        val url = Uri.parse("https://www.strava.com/oauth/authorize").buildUpon()
-            .appendQueryParameter("client_id", clientId.trim()).appendQueryParameter("redirect_uri", callback.toString())
-            .appendQueryParameter("response_type", "code").appendQueryParameter("scope", "activity:write")
-            .appendQueryParameter("approval_prompt", "force").appendQueryParameter("state", state).build().toString()
-        authorizationUrl.value = url
-        message.value = "Complete authorization in your browser."
-        authJob = scope.launch(Dispatchers.IO) {
-            try {
-                while (!server.isClosed) {
-                    val remaining = 600_000 - (android.os.SystemClock.elapsedRealtime() - authStartedAt)
-                    if (remaining <= 0) break
-                    server.soTimeout = remaining.toInt()
-                    server.accept().use { socket ->
-                        socket.soTimeout = 5_000
-                        val line = socket.getInputStream().bufferedReader().readLine().orEmpty()
-                        val target = line.split(' ').getOrNull(1).orEmpty()
-                        val uri = Uri.parse("http://127.0.0.1:${server.localPort}$target")
-                        if (uri.path == "/strava/callback" && uri.getQueryParameter("state") == state) {
-                            try {
-                                acceptCallback(uri.toString())
-                                val body = "<html><body><h2>Strava connected</h2><a href=\"${context.packageName}://strava/return\">Return to Grupetto</a><p>You can close this tab.</p></body></html>"
-                                socket.getOutputStream().write("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n$body".toByteArray())
-                            } catch (_: Exception) {
-                                socket.getOutputStream().write("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\nAuthorization failed. Return to Grupetto and reconnect.".toByteArray())
-                                message.value = "Authorization failed. Check credentials and reconnect."
-                                throw IllegalStateException("Authorization failed. Check credentials and reconnect.")
-                            }
-                        } else socket.getOutputStream().write("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n".toByteArray())
-                    }
-                }
-            } catch (_: Exception) {
-                if (state != null) message.value = "Authorization ended or timed out. Connect again to retry."
-            } finally { server.close(); if (listener === server) { listener = null; state = null; authorizationUrl.value = null } }
-        }
-        url
-    }
-    suspend fun acceptCallback(url: String) = withContext(Dispatchers.IO) {
-        mutex.withLock {
-            val uri = Uri.parse(url.trim())
-            require(state != null && android.os.SystemClock.elapsedRealtime() - authStartedAt < 600_000 &&
-                uri.scheme == callback?.scheme && uri.host == callback?.host && uri.port == callback?.port &&
-                uri.path == callback?.path && uri.getQueryParameter("state") == state) { "Invalid or expired authorization response. Connect again." }
-            require(uri.getQueryParameter("error") == null) { "Authorization was cancelled." }
-            require(uri.getQueryParameter("scope").orEmpty().split(',', ' ').contains("activity:write")) { "Allow activity uploads when connecting Strava." }
-            val code = uri.getQueryParameter("code") ?: error("Authorization code is missing.")
-            state = null // Single use even if exchange fails.
-            val data = vault.read()
-            val result = tokenRequest(data, "authorization_code", "code", code)
-            if (result.has("scope")) require(result.getString("scope").split(',', ' ').contains("activity:write")) { "Strava did not grant upload permission." }
-            val athlete = result.getJSONObject("athlete")
-            data.put("athlete_id", athlete.getLong("id"))
-            data.put("athlete_name", listOf(athlete.optString("firstname"), athlete.optString("lastname")).joinToString(" ").trim())
-            saveTokens(data, result)
-            publish(data)
-            message.value = "Connected. Finished workouts can upload automatically."
-            authorizationUrl.value = null
-            listener?.close()
-        }
-    }
-    suspend fun accessToken(force: Boolean = false): Pair<Long, String> = withContext(Dispatchers.IO) {
-        mutex.withLock {
-            val data = vault.read()
-            val id = data.optLong("athlete_id")
-            check(id > 0 && data.has("refresh_token")) { "Connect Strava in settings first." }
-            if (force || data.optLong("expires_at") <= System.currentTimeMillis() / 1000 + 60) {
-                saveTokens(data, tokenRequest(data, "refresh_token", "refresh_token", data.getString("refresh_token")))
+            val uri = Uri.parse(link.trim())
+            require(uri.scheme == "https" && !uri.host.isNullOrBlank() && uri.userInfo == null &&
+                (uri.port == -1 || uri.port == 443) && (uri.path.isNullOrEmpty() || uri.path == "/") && uri.query == null) {
+                "Paste the HTTPS pairing link from your upload server page."
             }
-            id to data.getString("access_token")
+            val code = uri.fragment?.removePrefix("pair=").orEmpty()
+            require(uri.fragment?.startsWith("pair=") == true && code.matches(Regex("[a-f0-9]{64}"))) { "Invalid pairing link." }
+            val endpoint = "https://${uri.host}"
+            val old = vault.read()
+            // Reuse this random credential if a pairing response was lost.
+            val credential = if (old.optString("pending_code") == code && old.optString("pending_origin") == endpoint)
+                old.getString("pending_credential") else ByteArray(32).also { SecureRandom().nextBytes(it) }.joinToString("") { "%02x".format(it.toInt() and 255) }
+            old.put("pending_code", code).put("pending_origin", endpoint).put("pending_credential", credential)
+            vault.write(old)
+            val payload = JSONObject().put("code", code).put("credential", credential)
+            val data = request(endpoint + "/device/v1/pair", "POST", payload.toString().toRequestBody("application/json".toMediaType()))
+            val athlete = data.getLong("athleteId")
+            check(athlete > 0) { "Upload server did not return a rider." }
+            val saved = JSONObject().put("origin", endpoint).put("device_credential", credential).put("athlete_id", athlete)
+                .put("athlete_name", "${data.getString("member")} · athlete $athlete")
+            vault.write(saved); publish(saved)
+            message.value = "Tablet connected. Finished rides will upload through your upload server."
         }
     }
-    private fun tokenRequest(data: JSONObject, grant: String, key: String, value: String): JSONObject {
-        val body = FormBody.Builder().add("client_id", data.getString("client_id"))
-            .add("client_secret", data.getString("client_secret")).add("grant_type", grant).add(key, value).build()
-        return client.newCall(Request.Builder().url("https://www.strava.com/oauth/token").post(body).build()).execute().use {
-            if (!it.isSuccessful) throw StravaHttpException(it.code)
-            JSONObject(it.body!!.string())
+    suspend fun connection(): UploadServerConnection = withContext(Dispatchers.IO) {
+        initialized.await()
+        mutex.withLock {
+            val data = vault.read()
+            check(data.optLong("athlete_id") > 0 && data.has("device_credential") && data.has("origin")) { "Connect to upload server in settings first." }
+            UploadServerConnection(data.getString("origin"), data.getLong("athlete_id"), data.getString("device_credential"))
         }
     }
-    private fun saveTokens(data: JSONObject, tokens: JSONObject) {
-        data.put("access_token", tokens.getString("access_token")).put("refresh_token", tokens.getString("refresh_token"))
-            .put("expires_at", tokens.getLong("expires_at"))
-        vault.write(data)
-    }
-    fun cancelAuthorization() {
-        state = null
-        listener?.close(); listener = null
-        authJob?.cancel(); authJob = null
-        authorizationUrl.value = null
+    internal fun request(url: String, method: String = "GET", body: RequestBody? = null, credential: String? = null): JSONObject {
+        val builder = Request.Builder().url(url).method(method, body)
+        if (credential != null) builder.header("Authorization", "Bearer $credential")
+        return client.newCall(builder.build()).execute().use {
+            if (!it.isSuccessful) throw StravaHttpException(it.code, System.currentTimeMillis() + maxOf(30, it.header("Retry-After")?.toLongOrNull() ?: 60) * 1000)
+            val response = it.body ?: error("Upload server response was empty.")
+            require(response.contentLength() <= 64 * 1024) { "Upload server response was too large." }
+            val source = response.source()
+            source.request(64 * 1024 + 1)
+            require(source.buffer.size <= 64 * 1024) { "Upload server response was too large." }
+            JSONObject(source.readUtf8())
+        }
     }
     suspend fun disconnect() = withContext(Dispatchers.IO) {
-        cancelAuthorization()
-        mutex.withLock { vault.clear(); publish(JSONObject()); message.value = "Disconnected. Local workouts are kept." }
+        initialized.await()
+        mutex.withLock {
+            val data = vault.read()
+            var revoked = true
+            if (data.has("device_credential") && data.has("origin")) try {
+                request(data.getString("origin") + "/device/v1/connection", "DELETE", credential = data.getString("device_credential"))
+            } catch (_: Exception) { revoked = false }
+            vault.clear(); publish(JSONObject())
+            message.value = if (revoked) "Tablet disconnected. Local workouts are kept. Accepted deliveries continue."
+                else "Disconnected locally. Revoke the tablet on your upload server page when online. Accepted deliveries continue."
+        }
     }
 }

@@ -108,9 +108,9 @@ class OverlaySensorViewModel(
     private fun onDeadSensor() {
         mutableErrorMessage
             .tryEmit(
-                "The sensors seem to have fallen asleep." +
-                        " You may need to restart your Peloton by removing the" +
-                        " power adapter momentarily to restore them."
+                "Bike sensor data is unavailable. Reconnecting. " +
+                        "If readings do not return, finish and save your workout before " +
+                        "power-cycling the bike."
             )
     }
 
@@ -199,6 +199,9 @@ class OverlaySensorViewModel(
         val deltaSeconds = (currentTime - lastUpdateTime).coerceIn(0L, 5_000L) / 1000f
         lastUpdateTime = currentTime
 
+        // Heart-rate events can arrive while bike telemetry is unavailable.
+        if (!power.isFinite() || !cadence.isFinite() || !resistance.isFinite() || !speed.isFinite()) return
+        mutableErrorMessage.value = null
         val isCurrentlyMoving = mutableIsMoving.value
         if (isCurrentlyMoving) {
             // Update maxima while pedalling
@@ -242,24 +245,24 @@ class OverlaySensorViewModel(
 
     val powerValue = sensorInterface.power
         .sample(UiUpdatePeriod)
-        .map { "%.0f".format(it) }
+        .map { if (it.isFinite()) "%.0f".format(it) else "--" }
     val rpmValue = sensorInterface.cadence
         .sample(UiUpdatePeriod)
-        .map { "%.0f".format(it) }
+        .map { if (it.isFinite()) "%.0f".format(it) else "--" }
 
     val resistanceValue = sensorInterface.resistance
         .sample(UiUpdatePeriod)
-        .map { "%.0f".format(it) }
+        .map { if (it.isFinite()) "%.0f".format(it) else "--" }
 
     val speedValue = combine(
         sensorInterface.speed, useMph
     ) { speed, isMph ->
         val value = if (isMph) {
-            speed
+            speed.toDouble()
         } else {
             speed * MphToKph
         }
-        "%.1f".format(value)
+        if (value.isFinite()) "%.1f".format(value) else "--"
     }.sample(UiUpdatePeriod)
     val speedLabel = useMph.map {
         if (it) {
@@ -310,6 +313,10 @@ class OverlaySensorViewModel(
                 .collect(object : FlowCollector<Float> {
                     override suspend fun emit(value: Float) {
                         withContext(Dispatchers.Main) {
+                            if (!value.isFinite()) {
+                                powerGraph.clear()
+                                return@withContext
+                            }
                             powerGraph.add(value)
                             if (powerGraph.size > GraphMaxDataPoints) {
                                 powerGraph.removeFirst()
@@ -326,6 +333,10 @@ class OverlaySensorViewModel(
                 .collect(object : FlowCollector<Float> {
                     override suspend fun emit(value: Float) {
                         withContext(Dispatchers.Main) {
+                            if (!value.isFinite()) {
+                                cadenceGraph.clear()
+                                return@withContext
+                            }
                             cadenceGraph.add(value)
                             if (cadenceGraph.size > GraphMaxDataPoints) {
                                 cadenceGraph.removeFirst()
@@ -342,6 +353,10 @@ class OverlaySensorViewModel(
                 .collect(object : FlowCollector<Float> {
                     override suspend fun emit(value: Float) {
                         withContext(Dispatchers.Main) {
+                            if (!value.isFinite()) {
+                                resistanceGraph.clear()
+                                return@withContext
+                            }
                             resistanceGraph.add(value)
                             if (resistanceGraph.size > GraphMaxDataPoints) {
                                 resistanceGraph.removeFirst()
@@ -358,6 +373,10 @@ class OverlaySensorViewModel(
                 .collect(object : FlowCollector<Float> {
                     override suspend fun emit(value: Float) {
                         withContext(Dispatchers.Main) {
+                            if (!value.isFinite()) {
+                                speedGraph.clear()
+                                return@withContext
+                            }
                             speedGraph.add(value)
                             if (speedGraph.size > GraphMaxDataPoints) {
                                 speedGraph.removeFirst()
@@ -430,4 +449,3 @@ class OverlaySensorViewModel(
         }
     }
 }
-

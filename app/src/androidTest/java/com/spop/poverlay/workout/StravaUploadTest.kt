@@ -21,8 +21,8 @@ class StravaUploadTest {
         val name = "upload-${java.util.UUID.randomUUID()}.db"
         val repository = WorkoutRepository(context, name)
         val vault = CredentialVault(context, "test-upload-auth")
-        vault.write(JSONObject().put("athlete_id", 123).put("access_token", "test-access")
-            .put("refresh_token", "test-refresh").put("expires_at", 9999999999L))
+        vault.write(JSONObject().put("athlete_id", 123).put("device_credential", "test-device")
+            .put("origin", "https://household.example.invalid"))
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
         val auth = StravaAuthManager(context, scope, OkHttpClient.Builder().addInterceptor(interceptor).build(), vault)
         try {
@@ -40,14 +40,15 @@ class StravaUploadTest {
     @Test fun successfulUploadPersistsIdsAndDoesNotPostTwice() {
         val posts = AtomicInteger()
         fixture(Interceptor { chain ->
-            assertEquals("Bearer test-access", chain.request().header("Authorization"))
-            if (chain.request().method == "POST") {
+            assertEquals("Bearer test-device", chain.request().header("Authorization"))
+            if (chain.request().method == "PUT") {
+                assertEquals("application/xml", chain.request().body!!.contentType().toString())
                 posts.incrementAndGet()
                 val buffer = okio.Buffer(); chain.request().body!!.writeTo(buffer)
                 val payload = buffer.readUtf8()
-                assertTrue(payload.contains("grupetto-ride.tcx")); assertTrue(payload.contains("<ns3:Watts>200"))
-                response(chain, """{"id":456}""", 201)
-            } else response(chain, """{"id":456,"activity_id":789,"error":null}""")
+                assertTrue(payload.contains("<ns3:Watts>200"))
+                response(chain, """{"status":"uploaded","uploadId":"456","activityId":"789"}""", 202)
+            } else response(chain, "{}", 404)
         }) { repo, uploader ->
             uploader.upload("ride")
             assertEquals(WorkoutStatus.UPLOADED, repo.dao.get("ride")!!.status)
@@ -56,21 +57,21 @@ class StravaUploadTest {
             assertEquals(1, posts.get())
         }
     }
-    @Test fun uncertainSubmissionRequiresReviewAndNeverBlindlyRetries() {
+    @Test fun networkFailureRetainsRetryableWorkout() {
         val calls = AtomicInteger()
         fixture(Interceptor { calls.incrementAndGet(); throw IOException("connection lost") }) { repo, uploader ->
             uploader.upload("ride")
-            assertEquals(WorkoutStatus.REVIEW, repo.dao.get("ride")!!.status)
+            assertEquals(WorkoutStatus.QUEUED, repo.dao.get("ride")!!.status)
             uploader.upload("ride")
-            assertEquals(1, calls.get())
+            assertEquals(2, calls.get())
         }
     }
     @Test fun persistedUploadResumesPollingWithoutAnotherPost() {
         fixture(Interceptor { chain ->
             assertEquals("GET", chain.request().method)
-            response(chain, """{"id":456,"activity_id":789,"error":null}""")
+            response(chain, """{"status":"uploaded","uploadId":"456","activityId":"789"}""")
         }) { repo, uploader ->
-            repo.dao.update(repo.dao.get("ride")!!.copy(uploadId = 456, status = WorkoutStatus.PROCESSING))
+            repo.dao.update(repo.dao.get("ride")!!.copy(uploadId = 456, deliveryId = "ride", deliveryOrigin = "https://household.example.invalid", status = WorkoutStatus.PROCESSING))
             uploader.upload("ride")
             assertEquals(WorkoutStatus.UPLOADED, repo.dao.get("ride")!!.status)
         }

@@ -107,7 +107,7 @@ class WorkoutRecorder(
         }
         val now = wallClock()
         val workout = if (resume) current.value!!.copy(status = WorkoutStatus.RECORDING) else
-            Workout(UUID.randomUUID().toString(), now, athleteId = auth.athleteId.value)
+            Workout(UUID.randomUUID().toString(), now, athleteId = auth.athleteId.value, deliveryOrigin = auth.origin.value)
         if (resume) repository.dao.update(workout) else repository.dao.insert(workout)
         clockAnchor = maxOf(now, repository.dao.samples(workout.id).lastOrNull()?.timeMs?.plus(1) ?: now)
         elapsedAnchor = elapsedClock(); lastTick = elapsedAnchor
@@ -133,11 +133,16 @@ class WorkoutRecorder(
         if (autoUpload) StravaUploadWorker.enqueue(context, w.id)
     }
     suspend fun queue(workout: Workout) {
-        val athlete = auth.athleteId.value ?: error("Connect Strava in settings first.")
+        val connection = auth.connection()
+        val athlete = connection.athlete
         check(workout.endedAt != null && workout.lastPedaledAt != null) { "Only finished workouts with pedaling can be uploaded." }
         check(workout.athleteId == null || workout.athleteId == athlete) { "Reconnect this workout's original Strava account." }
         check(workout.status !in listOf(WorkoutStatus.UPLOADED, WorkoutStatus.UPLOADING, WorkoutStatus.PROCESSING, WorkoutStatus.QUEUED)) { "This workout is already uploaded or scheduled." }
-        repository.dao.update(workout.copy(athleteId = athlete, status = if (workout.uploadId != null && workout.status != WorkoutStatus.FAILED && workout.status != WorkoutStatus.REVIEW) WorkoutStatus.PROCESSING else WorkoutStatus.QUEUED,
+        val retryNew = workout.status in listOf(WorkoutStatus.FAILED, WorkoutStatus.REVIEW)
+        check(workout.deliveryOrigin == null || workout.deliveryOrigin == connection.origin) { "Reconnect this workout's original upload server." }
+        repository.dao.update(workout.copy(deliveryOrigin = connection.origin,
+            deliveryId = if (retryNew) UUID.randomUUID().toString() else workout.deliveryId ?: workout.id,
+            athleteId = athlete, status = if (workout.uploadId != null && workout.status != WorkoutStatus.FAILED && workout.status != WorkoutStatus.REVIEW) WorkoutStatus.PROCESSING else WorkoutStatus.QUEUED,
             uploadId = if (workout.status in listOf(WorkoutStatus.FAILED, WorkoutStatus.REVIEW)) null else workout.uploadId, error = null))
         StravaUploadWorker.enqueue(context, workout.id)
     }

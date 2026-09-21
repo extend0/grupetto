@@ -63,21 +63,21 @@ class DeadSensorDetector(
         launch(Dispatchers.IO) {
             sensorInterface.power.collect(object : FlowCollector<Float> {
                 override suspend fun emit(value: Float) {
-                    resetTimeoutChannel.trySend(Unit)
+                    if (value.isFinite()) resetTimeoutChannel.trySend(Unit)
                 }
             })
         }
         launch(Dispatchers.IO) {
             sensorInterface.resistance.collect(object : FlowCollector<Float> {
                 override suspend fun emit(value: Float) {
-                    resetTimeoutChannel.trySend(Unit)
+                    if (value.isFinite()) resetTimeoutChannel.trySend(Unit)
                 }
             })
         }
         launch(Dispatchers.IO) {
             sensorInterface.cadence.collect(object : FlowCollector<Float> {
                 override suspend fun emit(value: Float) {
-                    resetTimeoutChannel.trySend(Unit)
+                    if (value.isFinite()) resetTimeoutChannel.trySend(Unit)
                 }
             })
         }
