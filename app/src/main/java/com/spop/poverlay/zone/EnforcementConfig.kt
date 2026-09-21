@@ -105,7 +105,7 @@ enum class EnforcementState {
 /** Which side of the band the rider is on. */
 enum class Drift { BELOW, ABOVE }
 
-enum class SuspendReason { DISABLED, NO_ZONES, NO_SIGNAL, STALE, NOT_MOVING }
+enum class SuspendReason { DISABLED, NO_ZONES, NO_SIGNAL, STALE, NOT_MOVING, NO_WORKOUT }
 
 sealed interface PenaltyEffect {
     object PauseMedia : PenaltyEffect
@@ -141,6 +141,8 @@ data class TickInput(
      * to use.
      */
     val overlaySuppressed: Boolean = false,
+    /** False before the first pedal stroke and after the previous workout expires. */
+    val workoutActive: Boolean = true,
 )
 
 data class EnforcementSnapshot(

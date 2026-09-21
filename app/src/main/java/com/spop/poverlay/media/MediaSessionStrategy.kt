@@ -71,6 +71,10 @@ class MediaSessionStrategy(private val context: Context) : MediaPenaltyStrategy 
         return pausedPackages.isEmpty()
     }
 
+    override fun endWorkout() {
+        pausedPackages = emptyList()
+    }
+
     private fun MediaController.isPlaying() =
         playbackState?.state == PlaybackState.STATE_PLAYING
 }

@@ -17,6 +17,22 @@ import org.junit.Test
  */
 class ZoneEnforcerTest {
 
+    @Test
+    fun `waiting for a new workout earns no credit and applies no punishment`() {
+        val machine = ZoneEnforcer(baseConfig)
+        for (bpm in listOf(130, 100)) {
+            for (second in 0L..120L) {
+                val snapshot = machine.tick(TickInput(
+                    nowMs = second * 1000, bpm = bpm, hrAgeMs = 0,
+                    boundaries = boundaries, isMoving = false, workoutActive = false,
+                ))
+                assertEquals(SuspendReason.NO_WORKOUT, snapshot.suspendReason)
+                assertEquals(0L, machine.creditMillis)
+                assertTrue(PenaltyEffect.PauseMedia !in snapshot.effects)
+            }
+        }
+    }
+
     private val boundaries = listOf(120, 140, 160, 180)
 
     private val baseConfig = EnforcementConfig(

@@ -95,6 +95,14 @@ class MediaPenaltyController(private val strategies: List<MediaPenaltyStrategy>)
         strategies.forEach { runCatching { it.release() } }
     }
 
+    /** An expired ride is finished; do not start its video again. */
+    @Synchronized
+    fun endWorkout() {
+        activeStrategy = null
+        orphanedPause = false
+        strategies.forEach { runCatching { it.endWorkout() } }
+    }
+
     fun capabilities(): MediaCapabilities {
         val session = strategies.filterIsInstance<MediaSessionStrategy>().firstOrNull()
         return MediaCapabilities(

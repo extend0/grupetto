@@ -26,6 +26,9 @@ class ZoneEnforcementCoordinator(
     private val isMovingFlow: StateFlow<Boolean>,
     /** Output in watts. The one input that does not lag the rider's effort. */
     private val powerFlow: Flow<Float>,
+    private val cadenceFlow: Flow<Float>,
+    private val onWorkoutEnded: () -> Unit,
+    private val onMovementChanged: (Boolean) -> Unit,
     private val media: MediaPenaltyController,
     private val persistence: ZonePersistence,
     /** Optional: without it the curtain simply never stands down for another app. */
@@ -70,20 +73,23 @@ class ZoneEnforcementCoordinator(
     private var lastResumeAttemptMs = 0L
 
     private var lastEffortLogMs = 0L
+    private var workout = WorkoutSession()
 
     fun start() {
         if (jobs.isNotEmpty()) return
 
         // A previous process may have died holding the media paused. Hand it back before doing
         // anything else - a frozen video is not something to make the rider figure out.
+        workout = WorkoutSession(persistence.restoreLastPedaledAt())
         val restoredCredit = persistence.restoreCredit()
         if (persistence.wasMediaLeftPaused()) {
             Timber.w("Previous session died holding media paused; handing it back")
             lastResumeAttemptMs = SystemClock.elapsedRealtime()
             media.resumeOrphaned()
-            persistence.save(restoredCredit, media.pausedByUs)
+            persistence.save(restoredCredit, media.pausedByUs, workout.lastPedaledAtMs)
         }
         enforcer.restoreCredit(restoredCredit)
+        if (!workout.active) persistence.save(0L, false, null)
 
         jobs += scope.launch {
             configFlow.collect { config ->
@@ -92,6 +98,16 @@ class ZoneEnforcementCoordinator(
         }
         jobs += scope.launch {
             powerFlow.collect { latestPower = PowerSample(it, SystemClock.elapsedRealtime()) }
+        }
+        jobs += scope.launch {
+            cadenceFlow.collect { rpm ->
+                mutex.withLock {
+                    expireWorkoutIfDue()
+                    workout.onCadence(rpm, System.currentTimeMillis(), SystemClock.elapsedRealtime())
+                    onMovementChanged(workout.isMoving(SystemClock.elapsedRealtime()))
+                }
+                tick()
+            }
         }
         foreground?.let { monitor ->
             if (!monitor.hasPermission()) {
@@ -132,21 +148,22 @@ class ZoneEnforcementCoordinator(
         jobs.clear()
         // Release first, then record the outcome: if handing the media back somehow failed, the
         // next process needs to know it is still paused.
-        media.release()
-        persistence.save(enforcer.creditMillis, media.pausedByUs)
+        expireWorkoutIfDue()
+        if (workout.active) media.release() else media.endWorkout()
+        persistence.save(enforcer.creditMillis, media.pausedByUs, workout.lastPedaledAtMs)
         onHideCurtain()
         ZoneRuntime.publish(null)
     }
 
-    /** New ride: drop the accumulated credit. */
-    fun resetSession() {
-        scope.launch {
-            mutex.withLock {
-                enforcer.reset()
-                persistence.save(enforcer.creditMillis, media.pausedByUs)
-            }
-            tick()
-        }
+    private fun expireWorkoutIfDue() {
+        if (!workout.expire(System.currentTimeMillis(), SystemClock.elapsedRealtime())) return
+        Timber.i("Workout ended after inactivity; waiting for a new ride")
+        media.endWorkout()
+        enforcer.reset()
+        latestPower = null
+        onHideCurtain()
+        onWorkoutEnded()
+        persistence.save(0L, false, null)
     }
 
     /** The curtain's escape hatch. */
@@ -170,6 +187,8 @@ class ZoneEnforcementCoordinator(
 
     private suspend fun tick() {
         val snapshot = mutex.withLock {
+            expireWorkoutIfDue()
+            onMovementChanged(workout.isMoving(SystemClock.elapsedRealtime()))
             enforcer.tick(
                 TickInput(
                     // Monotonic: a wall-clock correction mid-ride must not skew a 45 minute goal.
@@ -178,6 +197,7 @@ class ZoneEnforcementCoordinator(
                     hrAgeMs = HeartRateManager.heartRateAgeMs,
                     boundaries = HeartRateManager.heartRateZones.value,
                     isMoving = isMovingFlow.value,
+                    workoutActive = workout.active,
                     powerWatts = latestPower?.freshWatts(SystemClock.elapsedRealtime()),
                     // Our own settings report themselves; anything else has to be observed.
                     overlaySuppressed = ZoneRuntime.settingsVisible ||
@@ -255,6 +275,6 @@ class ZoneEnforcementCoordinator(
         }
         if (!dueByTime && !mediaChanged && !mediaStateChanged) return
         lastPersistedAtMs = now
-        persistence.save(enforcer.creditMillis, media.pausedByUs)
+        persistence.save(enforcer.creditMillis, media.pausedByUs, workout.lastPedaledAtMs)
     }
 }

@@ -143,7 +143,7 @@ class ZoneEnforcer(config: EnforcementConfig) {
         }
 
         // Completion and explicit release must not depend on a working strap.
-        if (config.enabled && bounds != null && creditMs >= config.goalMs) {
+        if (config.enabled && input.workoutActive && bounds != null && creditMs >= config.goalMs) {
             drift = null
             enter(EnforcementState.COMPLETE, now)
             if (suspendReason == null) advance(now, deltaMs, judged!!, bounds)
@@ -205,6 +205,7 @@ class ZoneEnforcer(config: EnforcementConfig) {
 
     private fun suspendReasonFor(input: TickInput, bounds: ZoneBounds?): SuspendReason? = when {
         !config.enabled -> SuspendReason.DISABLED
+        !input.workoutActive -> SuspendReason.NO_WORKOUT
         bounds == null -> SuspendReason.NO_ZONES
         input.bpm == null || input.bpm <= 0 -> SuspendReason.NO_SIGNAL
         input.hrAgeMs > config.staleHrMs -> SuspendReason.STALE

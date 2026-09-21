@@ -248,7 +248,6 @@ class OverlayService : LifecycleEnabledService() {
         )
         this.sensorViewModel = sensorViewModel
         // Wire up timer to auto-start/pause based on movement
-        timerViewModel.observeMovement(sensorViewModel.isMoving, sensorViewModel.sessionReset)
 
         val dialogViewModel = OverlayDialogViewModel(screenSize, sensorViewModel.isMinimized)
 
@@ -257,6 +256,9 @@ class OverlayService : LifecycleEnabledService() {
             configFlow = configurationRepository.zoneEnforcementConfig,
             isMovingFlow = sensorViewModel.isMoving,
             powerFlow = sensorInterface.power,
+            cadenceFlow = sensorInterface.cadence,
+            onWorkoutEnded = sensorViewModel::resetWorkout,
+            onMovementChanged = sensorViewModel::setMoving,
             media = MediaPenaltyController(applicationContext),
             persistence = ZonePersistence(applicationContext),
             foreground = ForegroundAppMonitor(applicationContext),
@@ -265,10 +267,6 @@ class OverlayService : LifecycleEnabledService() {
         )
         zoneCoordinator = coordinator
         coordinator.start()
-        lifecycleScope.launch {
-            // A new ride is a new goal.
-            sensorViewModel.sessionReset.drop(1).collect { coordinator.resetSession() }
-        }
 
         // Initialize and start watchdog (always enabled)
         val watchdogThreshold = 30.minutes

@@ -22,9 +22,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.sample
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
-import kotlin.time.Duration.Companion.minutes
 
 private const val MphToKph = 1.60934
 
@@ -64,8 +62,6 @@ class OverlaySensorViewModel(
         // Max number of points before data starts to shift
         const val GraphMaxDataPoints = 300
 
-        // Reset max values after all metrics are zero for this duration
-        val MaxResetTimeout = 5.minutes
     }
 
 
@@ -126,7 +122,6 @@ class OverlaySensorViewModel(
     private val mutableMaxResistance = MutableStateFlow(0f)
     private val mutableMaxSpeed = MutableStateFlow(0f)
     private val mutableMaxHeartRate = MutableStateFlow(0f)
-    private var lastNonZeroTime = System.currentTimeMillis()
 
     // Session totals tracking
     private val mutableTotalEnergy = MutableStateFlow(0f) // kilojoules
@@ -149,10 +144,6 @@ class OverlaySensorViewModel(
     private val mutableIsMoving = MutableStateFlow(false)
     val isMoving = mutableIsMoving.asStateFlow()
 
-    // Session reset signal (fires when 5-minute inactivity reset occurs)
-    private val mutableSessionReset = MutableStateFlow(0L) // timestamp of last reset
-    val sessionReset = mutableSessionReset.asStateFlow()
-
     val maxPower = mutableMaxPower.asStateFlow()
     val maxCadence = mutableMaxCadence.asStateFlow()
     val maxResistance = mutableMaxResistance.asStateFlow()
@@ -167,51 +158,50 @@ class OverlaySensorViewModel(
     val avgCadence = mutableAvgCadence.asStateFlow()
     val avgHeartRate = mutableAvgHeartRate.asStateFlow()
 
+    /** Movement is based on fresh cadence samples, not latched speed or resistance. */
+    fun setMoving(moving: Boolean) {
+        if (mutableIsMoving.value != moving) timerViewModel.onMovementChanged(moving)
+        mutableIsMoving.value = moving
+    }
+
+    /** Called once when the workout expires, even when no sensor events are arriving. */
+    fun resetWorkout() {
+        mutableIsMoving.value = false
+        timerViewModel.resetTimer()
+        mutableMaxPower.value = 0f
+        mutableMaxCadence.value = 0f
+        mutableMaxResistance.value = 0f
+        mutableMaxSpeed.value = 0f
+        mutableMaxHeartRate.value = 0f
+        mutableTotalEnergy.value = 0f
+        mutableTotalDistance.value = 0f
+        accumulatedEnergy.value = 0.0
+        totalActiveTime = 0f
+        totalHeartRateTime = 0f
+        sumSpeed = 0f
+        sumResistance = 0f
+        sumCadence = 0f
+        sumHeartRate = 0f
+        mutableAvgSpeed.value = 0f
+        mutableAvgResistance.value = 0f
+        mutableAvgCadence.value = 0f
+        mutableAvgHeartRate.value = 0f
+        lastUpdateTime = System.currentTimeMillis()
+        powerGraph.clear()
+        cadenceGraph.clear()
+        resistanceGraph.clear()
+        speedGraph.clear()
+        heartRateGraph.clear()
+    }
+
     private fun updateSessionStats(power: Float, cadence: Float, resistance: Float, speed: Float, heartRate: Float) {
         val currentTime = System.currentTimeMillis()
-        val deltaSeconds = (currentTime - lastUpdateTime) / 1000f
+        val deltaSeconds = (currentTime - lastUpdateTime).coerceIn(0L, 5_000L) / 1000f
         lastUpdateTime = currentTime
 
-        // Check if all values are essentially zero (for 5-minute reset)
-        val allZero = power < 1f && cadence < 1f && resistance < 1f && speed < 0.1f
-        // Check if actively moving (for accumulating averages/totals and timer)
-        val isCurrentlyMoving = cadence >= 1f || speed >= 0.1f
-
-        // Update movement state for timer auto-start/pause
-        if (mutableIsMoving.value != isCurrentlyMoving) {
-            mutableIsMoving.value = isCurrentlyMoving
-        }
-
-        if (allZero) {
-            // Check if we've been at zero for longer than the timeout
-            if (currentTime - lastNonZeroTime > MaxResetTimeout.inWholeMilliseconds) {
-                // Reset all max values and session totals
-                mutableMaxPower.value = 0f
-                mutableMaxCadence.value = 0f
-                mutableMaxResistance.value = 0f
-                mutableMaxSpeed.value = 0f
-                mutableMaxHeartRate.value = 0f
-                mutableTotalEnergy.value = 0f
-                mutableTotalDistance.value = 0f
-                // Reset averages
-                totalActiveTime = 0f
-                sumSpeed = 0f
-                sumResistance = 0f
-                sumCadence = 0f
-                sumHeartRate = 0f
-                totalHeartRateTime = 0f
-                mutableAvgSpeed.value = 0f
-                mutableAvgResistance.value = 0f
-                mutableAvgCadence.value = 0f
-                mutableAvgHeartRate.value = 0f
-                // Signal session reset for timer
-                mutableSessionReset.value = currentTime
-            }
-        } else {
-            // Update last non-zero time
-            lastNonZeroTime = currentTime
-
-            // Update max values (always, even when not moving)
+        val isCurrentlyMoving = mutableIsMoving.value
+        if (isCurrentlyMoving) {
+            // Update maxima while pedalling
             if (power > mutableMaxPower.value) mutableMaxPower.value = power
             if (cadence > mutableMaxCadence.value) mutableMaxCadence.value = cadence
             if (resistance > mutableMaxResistance.value) mutableMaxResistance.value = resistance
@@ -223,6 +213,7 @@ class OverlaySensorViewModel(
                 // Accumulate session totals
                 // Energy: power (watts) × time (seconds) = joules, divide by 1000 for kJ
                 mutableTotalEnergy.value += (power * deltaSeconds) / 1000f
+                accumulatedEnergy.value += power * deltaSeconds
                 // Distance: speed (mph) × time (hours) = miles
                 mutableTotalDistance.value += speed * (deltaSeconds / 3600f)
 
@@ -295,34 +286,6 @@ class OverlaySensorViewModel(
             "%.0f".format(calories)
         }
     
-    private fun setupCaloriesAccumulation() {
-        var lastUpdateTime = System.currentTimeMillis()
-        
-        viewModelScope.launch(Dispatchers.IO) {
-            combine(
-                sensorInterface.power,
-                timerViewModel.elapsedSeconds
-            ) { watts, seconds -> 
-                Pair(watts, seconds)
-            }.collect { (watts, elapsedSeconds) ->
-                if (elapsedSeconds > 0) {
-                    val currentTime = System.currentTimeMillis()
-                    val deltaTimeSeconds = (currentTime - lastUpdateTime) / 1000.0
-                    
-                    // Energy = Power × Time (in joules)
-                    val energyDelta = watts * deltaTimeSeconds
-                    
-                    accumulatedEnergy.value += energyDelta
-                    lastUpdateTime = currentTime
-                } else {
-                    // Timer was reset
-                    accumulatedEnergy.value = 0.0
-                    lastUpdateTime = System.currentTimeMillis()
-                }
-            }
-        }
-    }
-
     val powerGraph = mutableStateListOf<Float>()
     val cadenceGraph = mutableStateListOf<Float>()
     val resistanceGraph = mutableStateListOf<Float>()
@@ -446,7 +409,6 @@ class OverlaySensorViewModel(
     // Happens last to ensure initialization order is correct
     init {
         setupGraphData()
-        setupCaloriesAccumulation()
         setupMaxTracking()
         viewModelScope.launch(Dispatchers.IO) {
             deadSensorDetector.deadSensorDetected.collect(object : FlowCollector<Unit> {

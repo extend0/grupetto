@@ -18,11 +18,9 @@ class ZonePersistence(context: Context) {
 
     companion object {
         private const val KeyCreditMs = "zoneCreditMs"
-        private const val KeySavedAtMs = "zoneCreditSavedAtMs"
+        private const val KeyLastPedaledAtMs = "zoneLastPedaledAtMs"
         private const val KeyMediaPaused = "zoneMediaPausedByUs"
 
-        /** Credit older than this belongs to a previous ride, not this one. */
-        const val StaleCreditMs = 10 * 60 * 1000L
     }
 
     private val prefs = context.getSharedPreferences(
@@ -30,27 +28,33 @@ class ZonePersistence(context: Context) {
         Context.MODE_PRIVATE,
     )
 
-    fun save(creditMs: Long, mediaPaused: Boolean) {
+    fun save(creditMs: Long, mediaPaused: Boolean, lastPedaledAtMs: Long?) {
         prefs.edit {
             putLong(KeyCreditMs, creditMs)
-            putLong(KeySavedAtMs, System.currentTimeMillis())
+            if (lastPedaledAtMs == null) remove(KeyLastPedaledAtMs)
+            else putLong(KeyLastPedaledAtMs, lastPedaledAtMs)
             putBoolean(KeyMediaPaused, mediaPaused)
         }
     }
 
+    fun restoreLastPedaledAt(nowMs: Long = System.currentTimeMillis()): Long? =
+        prefs.getLong(KeyLastPedaledAtMs, 0L).takeIf {
+            it > 0 && WorkoutSession.isRecent(it, nowMs)
+        }
+
     fun restoreCredit(nowMs: Long = System.currentTimeMillis()): Long {
-        val savedAt = prefs.getLong(KeySavedAtMs, 0L)
-        if (savedAt == 0L || nowMs - savedAt > StaleCreditMs) return 0L
+        if (restoreLastPedaledAt(nowMs) == null) return 0L
         return prefs.getLong(KeyCreditMs, 0L).coerceAtLeast(0L)
     }
 
-    /** True if a previous process died while holding the media paused. */
-    fun wasMediaLeftPaused(): Boolean = prefs.getBoolean(KeyMediaPaused, false)
+    /** Never restart yesterday's video when restoring an expired workout. */
+    fun wasMediaLeftPaused(nowMs: Long = System.currentTimeMillis()): Boolean =
+        restoreLastPedaledAt(nowMs) != null && prefs.getBoolean(KeyMediaPaused, false)
 
     fun clear() {
         prefs.edit {
             remove(KeyCreditMs)
-            remove(KeySavedAtMs)
+            remove(KeyLastPedaledAtMs)
             remove(KeyMediaPaused)
         }
     }

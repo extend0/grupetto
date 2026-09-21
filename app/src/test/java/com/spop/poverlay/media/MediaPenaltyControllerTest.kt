@@ -41,6 +41,18 @@ class MediaPenaltyControllerTest {
     }
 
     @Test
+    fun `ending workout drops pause ownership without playing old media`() {
+        val strategy = FakeStrategy("session")
+        val controller = MediaPenaltyController(listOf(strategy))
+        controller.pause()
+        controller.endWorkout()
+        controller.release()
+        assertFalse(controller.pausedByUs)
+        assertEquals(0, strategy.resumeCalls)
+        assertTrue(strategy.released)
+    }
+
+    @Test
     fun `stops at the first strategy that works`() {
         val first = FakeStrategy("first")
         val second = FakeStrategy("second")

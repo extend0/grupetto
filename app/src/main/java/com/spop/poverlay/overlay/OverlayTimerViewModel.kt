@@ -62,29 +62,10 @@ open class OverlayTimerViewModel(
         }
     }
 
-    /**
-     * Called by OverlayService to observe movement state
-     */
-    fun observeMovement(isMoving: StateFlow<Boolean>, sessionReset: StateFlow<Long>) {
-        viewModelScope.launch {
-            isMoving.collect { moving ->
-                if (moving) {
-                    // Start/resume timer when movement starts
-                    mutableTimerStarted.value = true
-                    mutableTimerRunning.value = true
-                } else {
-                    // Pause timer when movement stops
-                    mutableTimerRunning.value = false
-                }
-            }
-        }
-
-        viewModelScope.launch {
-            sessionReset.drop(1).collect {
-                // Reset timer on session reset (5-minute inactivity)
-                resetTimer()
-            }
-        }
+    /** Called synchronously so an expired ride and new pedal sample cannot be conflated. */
+    internal fun onMovementChanged(moving: Boolean) {
+        if (moving) mutableTimerStarted.value = true
+        mutableTimerRunning.value = moving
     }
 
     fun onTimerTap() {
@@ -99,7 +80,7 @@ open class OverlayTimerViewModel(
         resetTimer()
     }
 
-    private fun resetTimer() {
+    internal fun resetTimer() {
         accumulatedSeconds = 0L
         mutableAccumulatedSeconds.value = 0L
         mutableTimerRunning.value = false

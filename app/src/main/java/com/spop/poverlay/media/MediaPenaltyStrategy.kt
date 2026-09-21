@@ -22,6 +22,9 @@ interface MediaPenaltyStrategy {
 
     /** Drop any OS resource held (audio focus, in practice). */
     fun release() {}
+
+    /** Forget a finished workout without sending a play command. */
+    fun endWorkout() { release() }
 }
 
 /** What the settings screen shows the user about media control on this particular tablet. */

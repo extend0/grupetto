@@ -21,6 +21,9 @@ fun EnforcementSnapshot.ridingStatus(): ZoneStatus? {
         val recovery = recoveryMessage()
         return status(recovery.title, recovery.detail, ZoneStatusTone.URGENT)
     }
+    if (suspendReason == SuspendReason.NO_WORKOUT) return status(
+        "Ready for a new workout", "Start pedalling · your goal begins fresh", ZoneStatusTone.NORMAL,
+    )
     if (state == EnforcementState.SUSPENDED) return status(
         when (suspendReason) {
             SuspendReason.NO_SIGNAL -> "Waiting for heart rate"
