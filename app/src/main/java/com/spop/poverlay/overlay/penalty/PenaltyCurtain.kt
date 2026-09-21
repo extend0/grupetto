@@ -30,7 +30,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.Canvas
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import com.spop.poverlay.ui.theme.zoneColor
-import com.spop.poverlay.zone.Drift
+import com.spop.poverlay.zone.recoveryMessage
 import com.spop.poverlay.zone.EnforcementSnapshot
 import java.util.concurrent.TimeUnit
 
@@ -49,6 +49,7 @@ fun PenaltyCurtain(
     modifier: Modifier = Modifier,
 ) {
     val accent = zoneColor(snapshot.targetZone)
+    val recovery = snapshot.recoveryMessage()
     val holdProgress = if (snapshot.holdRequiredMs <= 0) {
         0f
     } else {
@@ -62,24 +63,24 @@ fun PenaltyCurtain(
         contentAlignment = Alignment.Center,
     ) {
         Column(
+            modifier = Modifier.padding(horizontal = 32.dp, vertical = 16.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             Text(
-                text = instruction(snapshot),
+                text = recovery.title,
                 color = Color.White,
                 fontSize = 30.sp,
                 fontWeight = FontWeight.Bold,
                 textAlign = TextAlign.Center,
             )
 
-            snapshot.band?.let { band ->
-                Text(
-                    text = bandLabel(band.floor, band.ceiling),
-                    color = accent,
-                    fontSize = 20.sp,
-                )
-            }
+            Text(
+                text = recovery.target,
+                color = accent,
+                fontSize = 20.sp,
+                textAlign = TextAlign.Center,
+            )
 
             Box(contentAlignment = Alignment.Center) {
                 Canvas(modifier = Modifier.size(190.dp)) {
@@ -95,14 +96,15 @@ fun PenaltyCurtain(
                         fontSize = 76.sp,
                         fontWeight = FontWeight.Bold,
                     )
-                    Text(text = "bpm", color = Color(0xFFB0B0B0), fontSize = 16.sp)
+                    Text(text = "smoothed bpm", color = Color(0xFFB0B0B0), fontSize = 16.sp)
                 }
             }
 
             Text(
-                text = holdLabel(snapshot, holdProgress),
+                text = recovery.detail,
                 color = Color(0xFFD0D0D0),
                 fontSize = 17.sp,
+                textAlign = TextAlign.Center,
             )
 
             Column(
@@ -129,10 +131,11 @@ fun PenaltyCurtain(
             // rider who genuinely wants out must never be more than a second away from it.
             Text(
                 text = "Hold to end enforcement",
-                color = Color(0xFF8A8A8A),
+                color = Color(0xFFE0E0E0),
                 fontSize = 15.sp,
                 modifier = Modifier
                     .clip(RoundedCornerShape(8.dp))
+                    .background(Color(0xFF303030))
                     .combinedClickable(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null,
@@ -169,27 +172,6 @@ private fun DrawScope.drawHoldRing(progress: Float, color: Color) {
             style = stroke,
         )
     }
-}
-
-private fun instruction(snapshot: EnforcementSnapshot) = when (snapshot.drift) {
-    Drift.BELOW -> "Pick it up - get back to Zone ${snapshot.targetZone}"
-    Drift.ABOVE -> "Ease off - back to Zone ${snapshot.targetZone}"
-    null -> "Hold it there"
-}
-
-private fun bandLabel(floor: Int?, ceiling: Int?) = when {
-    floor != null && ceiling != null -> "$floor–${ceiling - 1} bpm"
-    floor != null -> "$floor+ bpm"
-    ceiling != null -> "under $ceiling bpm"
-    else -> ""
-}
-
-private fun holdLabel(snapshot: EnforcementSnapshot, holdProgress: Float): String {
-    if (snapshot.drift != null) {
-        return "Back in the zone for ${snapshot.holdRequiredMs / 1000}s to resume"
-    }
-    val remaining = ((snapshot.holdRemainingMs + 999) / 1000).coerceAtLeast(0)
-    return if (holdProgress >= 1f) "Resuming…" else "Hold for ${remaining}s…"
 }
 
 private fun elapsed(seconds: Long): String {

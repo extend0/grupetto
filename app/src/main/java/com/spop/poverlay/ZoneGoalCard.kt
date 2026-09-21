@@ -35,8 +35,9 @@ import com.spop.poverlay.media.MediaCapabilities
 import com.spop.poverlay.ui.theme.ErrorColor
 import com.spop.poverlay.ui.theme.zoneColor
 import com.spop.poverlay.zone.EnforcementSnapshot
+import com.spop.poverlay.zone.EnforcementConfig
+import com.spop.poverlay.zone.ridingStatus
 import com.spop.poverlay.zone.EnforcementState
-import com.spop.poverlay.zone.SuspendReason
 import com.spop.poverlay.zone.zoneBounds
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -164,11 +165,11 @@ internal fun ZoneGoalCard(
                 }
                 Spacer(Modifier.height(uiScale.dp(4f)))
                 Text(
-                    text = "Credit only builds while your heart rate is inside the band. " +
-                        "Grace is how long you can drift before a warning starts - heart rate " +
-                        "lags effort by 20-30s, so short values punish physiology, not slacking.",
+                    text = "Time in your target zone counts toward the goal. If your strap disconnects " +
+                        "after a minute of steady riding, sufficient fresh power can keep the goal clock " +
+                        "running. If neither signal confirms your effort, the clock pauses.",
                     fontSize = uiScale.sp(12f),
-                    color = MutedColor,
+                    color = BodyColor,
                 )
 
                 Spacer(Modifier.height(uiScale.dp(12f)))
@@ -188,6 +189,25 @@ internal fun ZoneGoalCard(
                 )
 
                 if (penaltyEnabled) {
+                    val rules = EnforcementConfig()
+                    val floor = zoneBounds(targetZone, zones)?.let {
+                        com.spop.poverlay.zone.effectiveBand(it, rules.hysteresisBpm, strict = true).floor
+                    }
+                    Spacer(Modifier.height(uiScale.dp(8f)))
+                    Text(
+                        text = "How it works\n" +
+                            "• Warm up: accumulate ${rules.armAfterZoneSeconds}s in your zone before penalties arm.\n" +
+                            "• An amber hint appears when sustained falling effort puts your zone at risk.\n" +
+                            "• Below zone: ${graceSeconds}s grace, then a ${rules.warningSeconds}s warning before pausing. " +
+                            "Heart rate is smoothed, so brief fluctuations are ignored.\n" +
+                            (floor?.let { "• Resume: hold $it+ smoothed bpm for ${rules.recoveryHoldSeconds}s. " }
+                                ?: "• Zone 1 has no lower limit and never pauses your video. ") +
+                            "Fresh power at your learned riding effort can also recover a penalty when the strap is lost.\n" +
+                            "• Hold ‘End enforcement’ on the pause screen, or use the notification action, to stop penalties for this session.\n" +
+                            "• Once your goal is complete, you can cool down without penalties.",
+                        fontSize = uiScale.sp(13f),
+                        color = BodyColor,
+                    )
                     Spacer(Modifier.height(uiScale.dp(10f)))
                     MediaControlSection(viewModel, uiScale)
                 }
@@ -339,28 +359,8 @@ private fun NumberField(
 /**
  * "suspended" on its own tells the rider nothing actionable - the reason is what they can act on.
  */
-private fun statusLabel(snapshot: EnforcementSnapshot): String {
-    // Riding blind is the one state where the rider should be told what the app is doing, or
-    // a working strap and a dead one look identical from the saddle.
-    if (snapshot.state == EnforcementState.RIDING_BLIND) {
-        return "no heart rate - counting on your output"
-    }
-    // Say what ends the warm-up, not that one is happening - the rider needs the exit condition.
-    if (snapshot.state == EnforcementState.WARMUP) {
-        return "warming up - starts when you reach Zone ${snapshot.targetZone}"
-    }
-    if (snapshot.state != EnforcementState.SUSPENDED) {
-        return snapshot.state.name.lowercase().replace('_', ' ')
-    }
-    return when (snapshot.suspendReason) {
-        SuspendReason.NOT_MOVING -> "paused - not pedalling"
-        SuspendReason.NO_SIGNAL -> "waiting for heart rate"
-        SuspendReason.STALE -> "heart rate signal lost"
-        SuspendReason.NO_ZONES -> "set your zone transitions"
-        SuspendReason.DISABLED -> "off"
-        null -> "suspended"
-    }
-}
+private fun statusLabel(snapshot: EnforcementSnapshot): String =
+    snapshot.ridingStatus()?.let { "${it.title} · ${it.detail}" } ?: "off"
 
 private fun bandCaption(zone: Int, zones: List<Int>?): String {
     val bounds = zoneBounds(zone, zones) ?: return "Zone $zone"

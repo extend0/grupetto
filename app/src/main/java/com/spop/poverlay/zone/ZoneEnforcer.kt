@@ -53,6 +53,7 @@ class ZoneEnforcer(config: EnforcementConfig) {
     private val filter = HeartRateFilter()
 
     private val effort = EffortMonitor()
+    private val earlyWarning = EarlyEffortWarning()
 
     /** Timestamp of the last sample handed to [filter]; the machine ticks faster than the strap. */
     private var lastFedSampleAtMs: Long? = null
@@ -91,6 +92,7 @@ class ZoneEnforcer(config: EnforcementConfig) {
         hasEnteredZone = false
         filter.reset()
         effort.reset()
+        earlyWarning.reset()
         lastFedSampleAtMs = null
         // The media/curtain latches are deliberately kept: they track what the caller has
         // already applied, and the next tick emits whatever is needed to undo it.
@@ -462,6 +464,16 @@ class ZoneEnforcer(config: EnforcementConfig) {
             0L
         }
 
+        val headroom = smoothedBpm?.let { effort.headroomSeconds(it, bounds?.floor) }
+        val early = earlyWarning.update(
+            nowMs = now,
+            eligible = state == EnforcementState.IN_ZONE && suspendReason == null &&
+                canPenalize() && bounds?.floor != null,
+            powerRatio = effort.powerRatio,
+            trend = effort.trendBpmPerMin,
+            headroom = headroom,
+        )
+
         return EnforcementSnapshot(
             state = state,
             effects = effects,
@@ -482,9 +494,20 @@ class ZoneEnforcer(config: EnforcementConfig) {
             penaltyElapsedMs = penaltyStartedAtMs?.let { now - it } ?: 0L,
             secondsUntilPenalty = secondsUntilPenalty(now),
             effortHealth = health,
-            headroomSeconds = smoothedBpm?.let { effort.headroomSeconds(it, bounds?.floor) },
+            headroomSeconds = headroom,
             holdingWatts = effort.holdingWatts,
             trendBpmPerMin = effort.trendBpmPerMin,
+            earlyEffortWarning = early,
+            penaltyEnabled = config.penaltyEnabled,
+            enforcementArmed = canPenalize(),
+            enforcementReleased = releasedByUser,
+            warmupRemainingSeconds = ((config.armAfterZoneMs - creditMs).coerceAtLeast(0) + 999) / 1000,
+            graceRemainingSeconds = if (state == EnforcementState.GRACE) {
+                ((config.graceMs - (now - stateEnteredAtMs)).coerceAtLeast(0) + 999) / 1000
+            } else null,
+            recoveryFloorBpm = bounds?.let { effectiveBand(it, config.hysteresisBpm, strict = true).floor },
+            recoveryHolding = state == EnforcementState.PENALTY && holdStartedAtMs != null,
+            powerVouches = effort.vouchesForEffort(),
         )
     }
 }

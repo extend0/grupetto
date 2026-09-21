@@ -191,6 +191,16 @@ data class EnforcementSnapshot(
     val holdingWatts: Float?,
     /** Rate of change of the judged heart rate. Positive while climbing. */
     val trendBpmPerMin: Float?,
+    val earlyEffortWarning: Boolean = false,
+    val penaltyEnabled: Boolean = false,
+    val enforcementArmed: Boolean = false,
+    val enforcementReleased: Boolean = false,
+    val warmupRemainingSeconds: Long = 0,
+    val graceRemainingSeconds: Long? = null,
+    /** The exact recovery floor, including hysteresis and narrow-band fallback. */
+    val recoveryFloorBpm: Int? = null,
+    val recoveryHolding: Boolean = false,
+    val powerVouches: Boolean = false,
 ) {
     val progress: Float
         get() = if (goalSeconds <= 0) 0f else (creditSeconds.toFloat() / goalSeconds).coerceIn(0f, 1f)

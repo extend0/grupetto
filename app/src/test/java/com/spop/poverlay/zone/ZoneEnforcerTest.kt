@@ -1052,4 +1052,30 @@ class ZoneEnforcerTest {
         }
         assertEquals(EnforcementState.PENALTY, last.state)
     }
+
+    @Test
+    fun `falling power warns before zone dropout without changing enforcement`() {
+        establishHolding()
+        val credit = last.creditSeconds
+        advance(20_000, 130, watts = 60f)
+        assertEquals(EnforcementState.IN_ZONE, last.state)
+        assertTrue(last.earlyEffortWarning)
+        assertTrue(last.creditSeconds > credit)
+        assertEquals(0, countOf(PenaltyEffect.PauseMedia))
+        enforcer.releaseByUser()
+        advance(1_000, 130, watts = 60f)
+        assertTrue(!last.earlyEffortWarning)
+        assertTrue(last.enforcementReleased)
+    }
+
+    @Test
+    fun `snapshot exposes the actual recovery floor including narrow bands`() {
+        reachPenalty()
+        assertEquals(124, last.recoveryFloorBpm)
+        advance(1_000, 150)
+        assertTrue(last.recoveryHolding)
+        enforcer.updateConfig(baseConfig.copy(hysteresisBpm = 20))
+        advance(1_000, 130)
+        assertEquals(120, last.recoveryFloorBpm)
+    }
 }

@@ -372,7 +372,8 @@ class OverlayService : LifecycleEnabledService() {
                     overlayParams.y = origin.y.roundToInt()
                     overlayParams.flags = DefaultOverlayFlags or overlayFlags
                     overlayParams.gravity = gravity
-                    overlayParams.width = width
+                    // Status text can make the minimized strip wider than the metric cards.
+                    overlayParams.width = maxOf(width, mWidth)
                     overlayParams.height = if(sensorViewModel.isMinimized.value){
                         mHeight
                     }else{

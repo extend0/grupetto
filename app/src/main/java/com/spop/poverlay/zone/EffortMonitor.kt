@@ -142,6 +142,11 @@ class EffortMonitor {
      * this can only ever vouch for someone who has already proved, with a heart rate, what
      * their zone costs. Taking the strap off is not a way to get here.
      */
+    val powerRatio: Float?
+        get() = holdingWatts?.takeIf { it > 0f }?.let { holding ->
+            smoothedWatts?.div(holding)
+        }
+
     fun vouchesForEffort(): Boolean {
         val holding = holdingWatts ?: return false
         val watts = smoothedWattsValue ?: return false
