@@ -5,7 +5,6 @@ package com.spop.poverlay.overlay
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.TweenSpec
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.animateIntOffsetAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -22,9 +21,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
@@ -35,9 +32,6 @@ import com.spop.poverlay.ui.theme.zoneColor
 import com.spop.poverlay.zone.EnforcementState
 import com.spop.poverlay.zone.ZoneRuntime
 import com.spop.poverlay.zone.zoneFor
-import kotlinx.coroutines.flow.FlowCollector
-import kotlinx.coroutines.flow.collect
-import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.onEach
 import timber.log.Timber
 
@@ -59,7 +53,6 @@ fun Overlay(
     locationState: State<OverlayLocation>,
     horizontalDragCallback: (Float) -> Float,
     verticalDragCallback: (Float) -> Float,
-    offsetCallback: (Float, Float) -> Unit,
     onLayout: (IntSize) -> Unit,
     onTimerLayout: (IntSize) -> Unit
 ) {
@@ -92,18 +85,6 @@ fun Overlay(
     val avgResistance by sensorViewModel.avgResistance.collectAsState()
     val avgHeartRate by sensorViewModel.avgHeartRate.collectAsState()
 
-    var isCurrentlyAnimating by remember { mutableStateOf(false) }
-
-    LaunchedEffect(Unit) {
-        sensorViewModel.isMinimized
-            .drop(1) // Ignore the initial value since animations only happen after new updates
-            .collect(object : FlowCollector<Boolean> {
-                override suspend fun emit(value: Boolean) {
-                    isCurrentlyAnimating = true
-                }
-            })
-    }
-
     val minimized by sensorViewModel.isMinimized.collectAsState(initial = false)
     val heartRateZones by HeartRateManager.heartRateZones.collectAsStateWithLifecycle(initialValue = null)
     val zoneGoal by ZoneRuntime.snapshot.collectAsStateWithLifecycle(initialValue = null)
@@ -118,32 +99,10 @@ fun Overlay(
     val size = remember { mutableStateOf(IntSize.Zero) }
 
 
-    val mainContentHeight = with(LocalDensity.current) {
-        height.roundToPx()
-    }
-
     val timerAlpha by animateFloatAsState(
         if (minimized) .5f else 1f,
         animationSpec = TweenSpec(VisibilityChangeDurationMs, 0, LinearEasing)
     )
-
-    val visibilityOffset by animateIntOffsetAsState(
-        if (minimized) {
-            when (location) {
-                // When the main content is hidden, move it off screen completely
-                OverlayLocation.Top -> IntOffset(0, -mainContentHeight)
-                OverlayLocation.Bottom -> IntOffset(0, mainContentHeight)
-            }
-        } else {
-            IntOffset.Zero
-        },
-        animationSpec = TweenSpec(VisibilityChangeDurationMs, 0, LinearEasing),
-        finishedListener = {
-            isCurrentlyAnimating = false
-        }
-    )
-
-    offsetCallback(visibilityOffset.y.toFloat(), size.value.height.toFloat())
 
     var horizontalDragOffset by remember { mutableStateOf(0f) }
     var verticalDragOffset by remember { mutableStateOf(0f) }
@@ -225,7 +184,7 @@ fun Overlay(
                 rowAlignment = rowAlignment,
                 power = power,
                 rpm = rpm,
-                pauseChart = isCurrentlyAnimating,
+                pauseChart = false,
                 currentGraph = currentGraph,
                 selectedMetric = selectedMetric,
                 resistance = resistance,
@@ -280,8 +239,7 @@ fun Overlay(
         }
         Column(
             modifier = Modifier
-                .wrapContentSize()
-                .offset { visibilityOffset },
+                .wrapContentSize(),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             // The warning: the strip stains toward the zone colour as the grace period runs out,
@@ -300,13 +258,13 @@ fun Overlay(
 
             when (location) {
                 OverlayLocation.Top -> {
-                    mainContent()
+                    if (!minimized) mainContent()
 
                     timer()
                 }
                 OverlayLocation.Bottom -> {
                     timer()
-                    mainContent()
+                    if (!minimized) mainContent()
 
                 }
             }

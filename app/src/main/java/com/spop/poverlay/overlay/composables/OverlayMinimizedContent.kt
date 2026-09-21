@@ -4,11 +4,11 @@ import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.Icon
+import androidx.compose.material.IconButton
 import androidx.compose.material.Text
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -138,35 +138,23 @@ fun OverlayMinimizedContent(
         }
 
         Spacer(modifier = Modifier.width(6.dp))
-        Icon(
-            imageVector = Icons.Filled.Settings,
-            contentDescription = "Open settings",
-            tint = Color.White,
-            modifier = Modifier
-                .size(20.dp)
-                .clickable { onOpenSettings() }
-        )
+        IconButton(onClick = onOpenSettings, modifier = Modifier.size(48.dp)) {
+            Icon(Icons.Filled.Settings, contentDescription = "Open settings",
+                tint = Color.White, modifier = Modifier.size(20.dp))
+        }
 
-        // Minimize/Maximize button
-        Spacer(modifier = Modifier.width(8.dp))
-        Icon(
-            imageVector = if (isMinimized) {
-                when (location) {
-                    OverlayLocation.Top -> Icons.Filled.KeyboardArrowDown
-                    OverlayLocation.Bottom -> Icons.Filled.KeyboardArrowUp
-                }
-            } else {
-                when (location) {
-                    OverlayLocation.Top -> Icons.Filled.KeyboardArrowUp
-                    OverlayLocation.Bottom -> Icons.Filled.KeyboardArrowDown
-                }
-            },
-            contentDescription = if (isMinimized) "Expand" else "Minimize",
-            tint = Color.White,
-            modifier = Modifier
-                .size(24.dp)
-                .clickable { onMinimizeToggle() }
-        )
+        IconButton(onClick = onMinimizeToggle, modifier = Modifier.size(48.dp)) {
+            Icon(
+                imageVector = if (isMinimized == (location == OverlayLocation.Bottom)) {
+                    Icons.Filled.KeyboardArrowUp
+                } else {
+                    Icons.Filled.KeyboardArrowDown
+                },
+                contentDescription = if (isMinimized) "Expand" else "Minimize",
+                tint = Color.White,
+                modifier = Modifier.size(24.dp),
+            )
+        }
 
         if (isMinimized) {
             Spacer(modifier = Modifier.width(4.dp))

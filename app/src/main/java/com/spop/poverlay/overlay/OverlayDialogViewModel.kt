@@ -1,20 +1,16 @@
 package com.spop.poverlay.overlay
 
-import android.view.View
 import android.view.WindowManager.LayoutParams
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.unit.IntSize
-import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
 import kotlin.math.abs
 import kotlin.math.ceil
 
 @Suppress("LiftReturnOrAssignment")
 class OverlayDialogViewModel(
-    private val screenSize: Size,
-    private val isMinimized : StateFlow<Boolean>
+    private val screenSize: Size
     ) {
     companion object {
         // If the overlay is dragged within this range of pixels from the center of the screen
@@ -26,37 +22,9 @@ class OverlayDialogViewModel(
     // Defined as width to height
     val dialogSizeParams = MutableStateFlow(LayoutParams.WRAP_CONTENT to LayoutParams.WRAP_CONTENT)
     val minimizedDialogSizeParams = MutableStateFlow(LayoutParams.WRAP_CONTENT to LayoutParams.WRAP_CONTENT)
-    val partialOverlayFlags = MutableStateFlow(0)
-    val touchTargetVisiblity = MutableStateFlow(View.GONE)
     val dialogLocation = MutableStateFlow(OverlayLocation.Bottom)
     val dialogGravity = MutableStateFlow(dialogLocation.value.gravity)
 
-
-    val touchTargetHeight = MutableStateFlow(0f)
-    // When overlay is hidden, an invisible touch target appears to accept touches:
-    // - Touch target visibility is the opposite of the main view
-    // - Overlay has FLAG_NOT_TOUCHABLE if it has started hiding
-    // - Touch target height should match overlay height, plus margin for ease of use
-    fun processHideProgress(hiddenHeight: Float, totalHeight: Float) {
-
-        val remainingHeight = abs(totalHeight - (abs(hiddenHeight)))
-        val isMinimizeDone = abs(hiddenHeight) > 0f
-
-        if (isMinimizeDone) {
-            touchTargetVisiblity.value = View.VISIBLE
-            touchTargetHeight.value = remainingHeight + OverlayService.HiddenTouchTargetMarginPx
-        } else {
-            touchTargetVisiblity.value = View.GONE
-            touchTargetHeight.value = 0f
-        }
-
-
-        partialOverlayFlags.value = if (isMinimizeDone) {
-            LayoutParams.FLAG_NOT_TOUCHABLE
-        } else {
-            0
-        }
-    }
 
     // Takes the current horizontal progress of a drag and returns a new progress
     // - If the gesture is near the center of the screen, keep view at 0 (allows snapping to center)

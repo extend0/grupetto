@@ -18,10 +18,8 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.view.WindowManager.LayoutParams
-import android.widget.FrameLayout
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.ViewCompositionStrategy
@@ -100,8 +98,6 @@ class OverlayService : LifecycleEnabledService() {
 
         val OverlayHeightDp = 110.dp
 
-        //Increases the size of the touch target during the hidden state
-        const val HiddenTouchTargetMarginPx = 40
 
         //The percentage up or down a vertical drag must go before the overlay is relocated
         //Defined relative to the height of the screen
@@ -117,7 +113,6 @@ class OverlayService : LifecycleEnabledService() {
     private var wakeLock: PowerManager.WakeLock? = null
     private var wakeLockRefreshJob: Job? = null
     private var overlayView: View? = null
-    private var touchTargetView: View? = null
     private var curtainView: View? = null
     private var debugHeartRateReceiver: BroadcastReceiver? = null
     private var zoneCoordinator: ZoneEnforcementCoordinator? = null
@@ -249,7 +244,7 @@ class OverlayService : LifecycleEnabledService() {
         this.sensorViewModel = sensorViewModel
         // Wire up timer to auto-start/pause based on movement
 
-        val dialogViewModel = OverlayDialogViewModel(screenSize, sensorViewModel.isMinimized)
+        val dialogViewModel = OverlayDialogViewModel(screenSize)
 
         val coordinator = ZoneEnforcementCoordinator(
             scope = lifecycleScope,
@@ -304,19 +299,6 @@ class OverlayService : LifecycleEnabledService() {
             disableAnimations()
         }
 
-        val touchTargetParams = LayoutParams().apply {
-            copyFrom(overlayParams)
-            disableAnimations()
-        }
-
-        touchTargetView = FrameLayout(this).apply {
-            lifecycleViaService()
-            setOnClickListener {
-                sensorViewModel.onOverlayPressed()
-            }
-            layoutParams = ViewGroup.LayoutParams(100, 100)
-        }
-
         overlayView = ComposeView(this).apply {
             lifecycleViaService()
             setViewCompositionStrategy(
@@ -331,7 +313,6 @@ class OverlayService : LifecycleEnabledService() {
                     dialogViewModel.dialogLocation.collectAsState(),
                     dialogViewModel::processHorizontalDrag,
                     dialogViewModel::processVerticalDrag,
-                    dialogViewModel::processHideProgress,
                     dialogViewModel::onOverlayLayout,
                     dialogViewModel::onTimerOverlayLayout
                 )
@@ -343,59 +324,30 @@ class OverlayService : LifecycleEnabledService() {
             clipToOutline = false
         }
         val overlay = overlayView!!
-        val touchTarget = touchTargetView!!
         wm.addView(overlay, overlayParams)
 
-        wm.addView(touchTarget, touchTargetParams)
-        //touchTarget.clipChildren = false
-        //touchTarget.clipToPadding = false
         //Subscribe to Dialog view model and update views
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.RESUMED) {
                 combine(
                     dialogViewModel.dialogOrigin,
                     dialogViewModel.dialogGravity,
-                    dialogViewModel.partialOverlayFlags,
-                    dialogViewModel.touchTargetHeight,
                     dialogViewModel.dialogSizeParams,
-                    dialogViewModel.minimizedDialogSizeParams
-                ) { values ->
-                    val origin = values[0] as Offset
-                    val gravity = values[1] as Int
-                    val overlayFlags = values[2] as Int
-                    val touchTargetHeight = values[3] as Float
-                    val (width, height)  = values[4] as Pair<Int,Int>
-                    val (mWidth, mHeight)  = values[5] as Pair<Int,Int>
+                    dialogViewModel.minimizedDialogSizeParams,
+                    sensorViewModel.isMinimized,
+                ) { origin, gravity, expandedSize, stripSize, minimized ->
                     overlayParams.x = origin.x.roundToInt()
                     overlayParams.y = origin.y.roundToInt()
-                    overlayParams.flags = DefaultOverlayFlags or overlayFlags
+                    overlayParams.flags = DefaultOverlayFlags
                     overlayParams.gravity = gravity
-                    // Status text can make the minimized strip wider than the metric cards.
-                    overlayParams.width = maxOf(width, mWidth)
-                    overlayParams.height = if(sensorViewModel.isMinimized.value){
-                        mHeight
-                    }else{
-                        height
-                    }
-                    touchTargetParams.x = origin.x.roundToInt()
-                    touchTargetParams.y = origin.y.roundToInt()
-                    touchTargetParams.gravity = gravity
-                    touchTargetParams.width = mWidth
-                    touchTargetParams.height = touchTargetHeight.roundToInt()
-                    val currentOverlay = overlayView
-                    val currentTouchTarget = touchTargetView
-                    if (currentOverlay == null || currentTouchTarget == null) {
-                        Timber.d("Overlay views cleared before update; skipping layout application")
-                        return@combine
-                    }
-                    currentTouchTarget.visibility = if (touchTargetHeight > 0f){
-                        View.VISIBLE
-                    }else{
-                        View.GONE
-                    }
+                    overlayParams.width = if (minimized) stripSize.first
+                        else maxOf(expandedSize.first, stripSize.first)
+                    overlayParams.height = LayoutParams.WRAP_CONTENT
+                    // The visible strip owns its touches in both modes. Hidden metric cards
+                    // are removed from layout instead of covered by an invisible window.
+                    val currentOverlay = overlayView ?: return@combine
                     disableClipOnParents(currentOverlay)
                     wm.updateViewLayout(currentOverlay, overlayParams)
-                    wm.updateViewLayout(currentTouchTarget, touchTargetParams)
                 }.collect {}
             }
         }
@@ -687,15 +639,11 @@ class OverlayService : LifecycleEnabledService() {
 
     private fun removeOverlayViews() {
         val wm = windowManager
-        val hasViews = overlayView != null || touchTargetView != null || curtainView != null
+        val hasViews = overlayView != null || curtainView != null
         if (wm != null && hasViews) {
             overlayView?.let {
                 runCatching { wm.removeViewImmediate(it) }
                     .onFailure { ex -> Timber.w(ex, "Failed to remove overlay view") }
-            }
-            touchTargetView?.let {
-                runCatching { wm.removeViewImmediate(it) }
-                    .onFailure { ex -> Timber.w(ex, "Failed to remove touch target view") }
             }
             curtainView?.let {
                 runCatching { wm.removeViewImmediate(it) }
@@ -705,7 +653,6 @@ class OverlayService : LifecycleEnabledService() {
             Timber.e("WindowManager unavailable during cleanup; overlay views may remain attached and leak")
         }
         overlayView = null
-        touchTargetView = null
         curtainView = null
         windowManager = null
     }

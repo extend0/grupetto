@@ -38,6 +38,40 @@ class ZoneUiTest {
         bitmap.recycle()
     }
 
+    @Test fun minimizedControlsRemainIndependentlyTappableAtBothScreenEdges() {
+        val minimized = mutableStateOf(true)
+        val location = mutableStateOf(OverlayLocation.Bottom)
+        var timerTaps = 0
+        var settingsTaps = 0
+        compose.setContent {
+            MaterialTheme {
+                OverlayMinimizedContent(
+                    isMinimized = minimized.value, showTimerWhenMinimized = true,
+                    location = location.value, powerLabel = "150", cadenceLabel = "80",
+                    speedLabel = "18", resistanceLabel = "40", heartRateLabel = "120",
+                    contentAlpha = 1f, timerLabel = "12:34", timerPaused = false,
+                    zoneGoal = base(), onTap = { timerTaps++ }, onLongPress = {},
+                    onOpenSettings = { settingsTaps++ },
+                    onMinimizeToggle = { minimized.value = !minimized.value }, onLayout = {},
+                )
+            }
+        }
+        for (edge in OverlayLocation.values()) {
+            compose.runOnIdle { location.value = edge }
+            repeat(3) {
+                compose.onNodeWithContentDescription("Expand").performTouchInput { click() }
+                compose.onNodeWithContentDescription("Minimize").assertIsDisplayed()
+                    .performTouchInput { click() }
+                compose.onNodeWithContentDescription("Expand").assertIsDisplayed()
+            }
+            compose.onNodeWithContentDescription("Open settings").performTouchInput { click() }
+        }
+        compose.runOnIdle {
+            assertEquals(0, timerTaps)
+            assertEquals(2, settingsTaps)
+        }
+    }
+
     @Test fun ridingStatusesAreVisibleInTheMinimizedOverlay() {
         val state = mutableStateOf(base())
         compose.setContent {
