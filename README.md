@@ -99,6 +99,10 @@ After following those steps, the APK for grupetto can be found on the Releases t
 <img width="270" alt="Shows Timer Operation" src="https://user-images.githubusercontent.com/17497673/192137306-66e1d0c9-12a5-49d3-8b2b-6fc2ee4c8d61.gif">
 </p>
 
+# Workout recording and Strava
+
+Record rides locally and automatically upload them using your personal Strava API application. Recording and zone enforcement share a configurable **25-minute inactivity auto-end**. See the [setup and recovery guide](docs/strava.md).
+
 # Implementation
 
 ## Getting access to sensor data
@@ -169,8 +173,7 @@ this is displayed at the bottom of screen before the overlay is started)
 
 I've limited this project's scope due to the fact it could easily be broken by an update.
 
-Features I would consider out-of-scope are mostly related to workout session tracking, and
-interfacing directly with other apps.
+This fork adds local workout recording and a personal Strava upload integration; see the [workout guide](docs/strava.md).
 
 # What's with the name?
 

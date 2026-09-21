@@ -73,14 +73,15 @@ class ZoneEnforcementCoordinator(
     private var lastResumeAttemptMs = 0L
 
     private var lastEffortLogMs = 0L
-    private var workout = WorkoutSession()
+    private var workout = WorkoutSession(timeoutMs = { persistence.workoutSettings.timeoutMs })
+    private var waitForStop = false
 
     fun start() {
         if (jobs.isNotEmpty()) return
 
         // A previous process may have died holding the media paused. Hand it back before doing
         // anything else - a frozen video is not something to make the rider figure out.
-        workout = WorkoutSession(persistence.restoreLastPedaledAt())
+        workout = WorkoutSession(persistence.restoreLastPedaledAt(), { persistence.workoutSettings.timeoutMs })
         val restoredCredit = persistence.restoreCredit()
         if (persistence.wasMediaLeftPaused()) {
             Timber.w("Previous session died holding media paused; handing it back")
@@ -103,7 +104,8 @@ class ZoneEnforcementCoordinator(
             cadenceFlow.collect { rpm ->
                 mutex.withLock {
                     expireWorkoutIfDue()
-                    workout.onCadence(rpm, System.currentTimeMillis(), SystemClock.elapsedRealtime())
+                    if (waitForStop && rpm.isFinite() && rpm < 1f) waitForStop = false
+                    if (!waitForStop) workout.onCadence(rpm, System.currentTimeMillis(), SystemClock.elapsedRealtime())
                     onMovementChanged(workout.isMoving(SystemClock.elapsedRealtime()))
                 }
                 tick()
@@ -164,6 +166,21 @@ class ZoneEnforcementCoordinator(
         onHideCurtain()
         onWorkoutEnded()
         persistence.save(0L, false, null)
+    }
+
+    /** Shared explicit boundaries with recording; completion never restarts a latched cadence. */
+    suspend fun resetForRecording(finishing: Boolean) {
+        mutex.withLock {
+            media.endWorkout()
+            enforcer.reset()
+            latestPower = null
+            workout = WorkoutSession(timeoutMs = { persistence.workoutSettings.timeoutMs })
+            waitForStop = finishing
+            onHideCurtain()
+            onWorkoutEnded()
+            persistence.save(0L, false, null)
+        }
+        tick()
     }
 
     /** The curtain's escape hatch. */

@@ -17,14 +17,14 @@ internal fun isG700CrossTrainerModel(model: String): Boolean {
     return model.contains("G700", ignoreCase = true) || model.startsWith("PLTN-ATR", ignoreCase = true)
 }
 
-val IsG700CrossTrainer = isG700CrossTrainerModel(Build.MODEL)
+val IsG700CrossTrainer get() = isG700CrossTrainerModel(Build.MODEL)
 
 /**
  * All Peloton bikes start with model "PLTN-T". Treadmills start with "PLTN-TR", so this might also
  * apply to them, but it will be interesting if anything works on them here.
  * Note: G700 is handled separately.
  */
-val IsBikePlus = Build.MODEL.contains("PLTN-T")
+val IsBikePlus get() = Build.MODEL.contains("PLTN-T")
 
 
 fun calculateSpeedFromPelotonV1Power(power: Float) =

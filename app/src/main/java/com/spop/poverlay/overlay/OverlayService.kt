@@ -184,6 +184,7 @@ class OverlayService : LifecycleEnabledService() {
 
     override fun onDestroy() {
         mutableIsRunning.value = false
+        (application as com.spop.poverlay.GrupettoApplication).recorder.detach()
         // Stop before tearing down the views: this hands back any media we paused.
         zoneCoordinator?.stop()
         zoneCoordinator = null
@@ -262,6 +263,13 @@ class OverlayService : LifecycleEnabledService() {
         )
         zoneCoordinator = coordinator
         coordinator.start()
+        val recordingApp = application as com.spop.poverlay.GrupettoApplication
+        recordingApp.recorder.attach(sensorInterface,
+            start = { coordinator.resetForRecording(false) },
+            end = { coordinator.resetForRecording(true) })
+        lifecycleScope.launch {
+            recordingApp.recorder.moving.collect { syncBackgroundExecutionGuards() }
+        }
 
         // Initialize and start watchdog (always enabled)
         val watchdogThreshold = 30.minutes
@@ -444,6 +452,8 @@ class OverlayService : LifecycleEnabledService() {
             getString(R.string.end_enforcement_action),
             releasePendingIntent
         )
+        val finishIntent = Intent(this, MainActivity::class.java).putExtra("finishWorkout", true)
+        notificationBuilder.addAction(0, "Finish workout", PendingIntent.getActivity(this, 7, finishIntent, intentFlags))
         notificationBuilder.setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
         return notificationBuilder.build()
     }
@@ -492,7 +502,7 @@ class OverlayService : LifecycleEnabledService() {
             bleServer.setDirConTransportEnabled(dirConEnabled)
         }
 
-        if (shouldRunBle || dirConEnabled) {
+        if (shouldRunBle || dirConEnabled || (application as com.spop.poverlay.GrupettoApplication).recorder.moving.value) {
             acquireWakeLock()
         } else {
             releaseWakeLock()

@@ -205,7 +205,7 @@ internal fun ZoneGoalCard(
                             "Fresh power at your learned riding effort can also recover a penalty when the strap is lost.\n" +
                             "• Hold ‘End enforcement’ on the pause screen, or use the notification action, to stop penalties for this session.\n" +
                             "• Once your goal is complete, you can cool down without penalties.\n" +
-                            "• After 60 minutes without pedalling, the workout ends. Your next ride starts a fresh goal, " +
+                            "• Workouts end after the shared inactivity timeout (25 minutes by default; change it in Workouts & Strava). Your next ride starts a fresh goal, " +
                             "even if the screen was off or the app restarted.",
                         fontSize = uiScale.sp(13f),
                         color = BodyColor,

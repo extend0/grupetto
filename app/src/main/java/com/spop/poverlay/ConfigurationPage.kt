@@ -202,6 +202,7 @@ private fun StartServicePage(
             }
         }
         Spacer(modifier = Modifier.height(uiScale.dp(12f)))
+        com.spop.poverlay.workout.WorkoutSettingsCard()
 
         Row(
                 modifier = Modifier.fillMaxWidth(),

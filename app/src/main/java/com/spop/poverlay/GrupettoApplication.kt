@@ -12,13 +12,35 @@ import com.spop.poverlay.util.IsBikePlus
 import com.spop.poverlay.util.IsG700CrossTrainer
 import com.spop.poverlay.util.IsRunningOnPeloton
 import timber.log.Timber
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.filterNotNull
 
 class GrupettoApplication : Application() {
+    val workoutScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Main.immediate)
+    lateinit var workouts: com.spop.poverlay.workout.WorkoutRepository
+    lateinit var workoutSettings: com.spop.poverlay.workout.WorkoutSettings
+    lateinit var strava: com.spop.poverlay.strava.StravaAuthManager
+    lateinit var recorder: com.spop.poverlay.workout.WorkoutRecorder
     lateinit var bleServer: BleServer
         private set
 
     override fun onCreate() {
         super.onCreate()
+        workouts = com.spop.poverlay.workout.WorkoutRepository(this)
+        workoutSettings = com.spop.poverlay.workout.WorkoutSettings(this)
+        strava = com.spop.poverlay.strava.StravaAuthManager(this, workoutScope)
+        recorder = com.spop.poverlay.workout.WorkoutRecorder(this, workouts, workoutSettings, strava, workoutScope)
+        workoutScope.launch {
+            strava.athleteId.filterNotNull().collect { athlete ->
+                workouts.dao.reconnectable(athlete).forEach { workout ->
+                    if (workout.status == com.spop.poverlay.workout.WorkoutStatus.AUTH_REQUIRED) {
+                        workouts.dao.update(workout.copy(status = if (workout.uploadId == null)
+                            com.spop.poverlay.workout.WorkoutStatus.QUEUED else com.spop.poverlay.workout.WorkoutStatus.PROCESSING, error = null))
+                    }
+                    com.spop.poverlay.strava.StravaUploadWorker.enqueue(this@GrupettoApplication, workout.id)
+                }
+            }
+        }
         if (BuildConfig.DEBUG) {
             Timber.plant(Timber.DebugTree())
         }

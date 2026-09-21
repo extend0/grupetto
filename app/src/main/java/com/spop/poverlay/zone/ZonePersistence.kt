@@ -23,6 +23,8 @@ class ZonePersistence(context: Context) {
 
     }
 
+    val workoutSettings = com.spop.poverlay.workout.WorkoutSettings(context)
+
     private val prefs = context.getSharedPreferences(
         ConfigurationRepository.SharedPrefsName,
         Context.MODE_PRIVATE,
@@ -39,7 +41,7 @@ class ZonePersistence(context: Context) {
 
     fun restoreLastPedaledAt(nowMs: Long = System.currentTimeMillis()): Long? =
         prefs.getLong(KeyLastPedaledAtMs, 0L).takeIf {
-            it > 0 && WorkoutSession.isRecent(it, nowMs)
+            it > 0 && WorkoutSession.isRecent(it, nowMs, workoutSettings.timeoutMs)
         }
 
     fun restoreCredit(nowMs: Long = System.currentTimeMillis()): Long {

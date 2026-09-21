@@ -1,13 +1,13 @@
 package com.spop.poverlay.zone
 
 /** One workout lasts until a long gap in actual pedal activity, including time asleep. */
-class WorkoutSession(lastPedaledAtMs: Long? = null) {
+class WorkoutSession(lastPedaledAtMs: Long? = null, private val timeoutMs: () -> Long = { InactivityTimeoutMs }) {
     companion object {
-        const val InactivityTimeoutMs = 60 * 60 * 1000L
+        const val InactivityTimeoutMs = 25 * 60 * 1000L
         const val CadenceFreshMs = 10_000L
 
-        fun isRecent(lastPedaledAtMs: Long?, nowMs: Long): Boolean =
-            lastPedaledAtMs != null && nowMs - lastPedaledAtMs in 0 until InactivityTimeoutMs
+        fun isRecent(lastPedaledAtMs: Long?, nowMs: Long, timeout: Long = InactivityTimeoutMs): Boolean =
+            lastPedaledAtMs != null && (timeout == 0L || nowMs - lastPedaledAtMs in 0 until timeout)
     }
 
     var lastPedaledAtMs: Long? = lastPedaledAtMs
@@ -21,8 +21,10 @@ class WorkoutSession(lastPedaledAtMs: Long? = null) {
     /** Call before accepting a new sample: a returning rider must not revive yesterday's ride. */
     fun expire(nowMs: Long, elapsedMs: Long): Boolean {
         if (!active) return false
-        val recent = lastPedaledElapsedMs?.let { elapsedMs - it in 0 until InactivityTimeoutMs }
-            ?: isRecent(lastPedaledAtMs, nowMs)
+        val timeout = timeoutMs()
+        if (timeout == 0L) return false
+        val recent = lastPedaledElapsedMs?.let { elapsedMs - it in 0 until timeout }
+            ?: isRecent(lastPedaledAtMs, nowMs, timeout)
         if (recent) return false
         lastPedaledAtMs = null
         lastPedaledElapsedMs = null

@@ -74,6 +74,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (intent?.getBooleanExtra("finishWorkout", false) == true) {
+            (application as GrupettoApplication).recorder.finishRequested.value = true
+        }
         viewModel =
             ConfigurationViewModel(
                 application, ConfigurationRepository(applicationContext, this),
@@ -126,6 +129,12 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (intent.getBooleanExtra("finishWorkout", false)) (application as GrupettoApplication).recorder.finishRequested.value = true
+    }
+
     override fun onResume() {
         super.onResume()
         // The penalty curtain draws over every app, this one included. Covering the settings
@@ -161,6 +170,17 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun quitGrupetto() {
+        val recorder = (application as GrupettoApplication).recorder
+        if (recorder.current.value != null) {
+            android.app.AlertDialog.Builder(this).setTitle("Finish workout before closing?")
+                .setMessage("Save this workout and close Grupetto, or keep riding.")
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Finish & close") { _, _ -> lifecycleScope.launch {
+                    recorder.finish()
+                    if (recorder.current.value == null) quitGrupetto()
+                } }.show()
+            return
+        }
         Toast.makeText(
             this@MainActivity,
             HtmlCompat.fromHtml("<big>Closing Grupetto</big>", HtmlCompat.FROM_HTML_MODE_LEGACY),
