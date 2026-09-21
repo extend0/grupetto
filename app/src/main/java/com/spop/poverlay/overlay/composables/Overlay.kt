@@ -256,7 +256,7 @@ fun Overlay(
                     )
                 }
 
-            com.spop.poverlay.workout.WorkoutOverlayControls(minimized)
+            if (!minimized) com.spop.poverlay.workout.WorkoutOverlayControls()
             when (location) {
                 OverlayLocation.Top -> {
                     if (!minimized) mainContent()

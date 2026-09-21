@@ -37,9 +37,9 @@ fun WorkoutOverlayControls(minimized: Boolean = false) {
     val confirm by recorder.finishRequested.collectAsState()
     val error by recorder.error.collectAsState()
     val scope = rememberCoroutineScope()
-    Column(Modifier.background(Color(25, 25, 25)).padding(horizontal = 8.dp)) {
+    Column(if (minimized) Modifier else Modifier.background(Color(25, 25, 25)).padding(horizontal = 8.dp)) {
         if (confirm && current != null) {
-            Text("Finish this workout?", color = Color.White)
+            if (!minimized) Text("Finish this workout?", color = Color.White)
             Row {
                 TextButton(colors = ButtonDefaults.textButtonColors(contentColor = Color(0xFF80BFFF)), onClick = { scope.launch { recorder.finish() } }) { Text("Save & finish") }
                 TextButton(colors = ButtonDefaults.textButtonColors(contentColor = Color(0xFF80BFFF)), onClick = { recorder.finishRequested.value = false }) { Text("Keep riding") }
@@ -50,12 +50,16 @@ fun WorkoutOverlayControls(minimized: Boolean = false) {
                 TextButton(colors = ButtonDefaults.textButtonColors(contentColor = Color(0xFF80BFFF)), enabled = ready, onClick = { scope.launch { recorder.start(resume = true) } }) { Text("Resume workout") }
                 TextButton(colors = ButtonDefaults.textButtonColors(contentColor = Color(0xFF80BFFF)), onClick = { recorder.finishRequested.value = true }) { Text("Finish interrupted ride") }
             }
-        } else if (minimized) {
-            if (current != null) TextButton(colors = ButtonDefaults.textButtonColors(contentColor = Color(0xFF80BFFF)), onClick = { recorder.finishRequested.value = true }) { Text("Recording · Finish") }
         } else {
             TextButton(colors = ButtonDefaults.textButtonColors(contentColor = Color(0xFF80BFFF)), enabled = ready || current != null, onClick = {
                 if (current != null) recorder.finishRequested.value = true else scope.launch { recorder.start() }
-            }) { Text(if (current != null) "Recording · Finish workout" else "Start workout") }
+            }) {
+                Text(when {
+                    current == null -> "Start workout"
+                    minimized -> "Finish workout"
+                    else -> "Recording · Finish workout"
+                })
+            }
         }
         error?.let { Text(it, color = Color(0xFFFFAB91)); TextButton(colors = ButtonDefaults.textButtonColors(contentColor = Color(0xFF80BFFF)), onClick = { recorder.error.value = null }) { Text("Dismiss") } }
     }

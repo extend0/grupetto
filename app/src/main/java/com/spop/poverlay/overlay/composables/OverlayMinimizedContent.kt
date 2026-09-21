@@ -157,6 +157,7 @@ fun OverlayMinimizedContent(
         }
 
         if (isMinimized) {
+            com.spop.poverlay.workout.WorkoutOverlayControls(minimized = true)
             Spacer(modifier = Modifier.width(4.dp))
             OverlayTimerField(
                 modifier = Modifier.width(58.dp),
